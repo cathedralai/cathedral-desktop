@@ -61,6 +61,8 @@ var (
 	flagSSAddr   = flag.String("stream", ":8444", "sealed stream address")
 	flagCerts    = flag.String("certs", "/etc/boxd/certs", "directory with vcek.der, ask.der, ark.der (optional)")
 	flagTicketPK = flag.String("ticket-key", "/etc/boxd/ticket.pub", "Cathedral ticket public key, raw Ed25519 (optional)")
+	flagVNC      = flag.String("target-vnc", targetVNC, "address behind target vnc")
+	flagCDP      = flag.String("target-cdp", targetCDP, "address behind target cdp")
 )
 
 func main() {
@@ -296,9 +298,9 @@ func serveStream(c net.Conn, box *boxState) {
 func resolveTarget(t string) (string, error) {
 	switch t {
 	case "vnc":
-		return targetVNC, nil
+		return *flagVNC, nil
 	case "cdp":
-		return targetCDP, nil
+		return *flagCDP, nil
 	case "job":
 		return "job", nil
 	}

@@ -1,89 +1,107 @@
 # Sealed stream v1
 
-A byte pipe into a TEE box whose far end is proven by AMD, over any relay. The browser (or a
-native client) verifies the box's SEV-SNP report, agrees a session key with the box, and then
-every frame is AES-GCM ciphertext. Relays (websockify, the hotel bridge, a Cloudflare Worker, a
-tunnel) carry opaque frames and learn nothing but their sizes and timing.
+A byte pipe into a TEE box whose far end is proven by AMD, over any relay. The client (a browser or
+a native program) verifies the box's SEV-SNP report, runs a Noise handshake against the static key
+that report binds, and from then on every frame is AES-GCM ciphertext. Relays (websockify, the hotel
+bridge, a Cloudflare Worker, a tunnel) carry opaque frames and learn only sizes and timing.
 
-Built on the AB#361 link: the box makes a fresh ECDSA P-256 key at boot and gets an SNP report
-with `REPORT_DATA = sha256(SPKI) || 0x00 * 32` through configfs-tsm. That key signs the handshake.
-
-Private track (M-H, AB#353). Not production. Draft, 6 Nov 2026.
+Built on the AB#361 link (fresh keys per boot, report through configfs-tsm). Private track (M-H,
+AB#353, cards AB#591 to AB#593). Not production. 6 Nov 2026.
 
 ## Ports in the box
 
 | Port | Protocol | Who |
 |---|---|---|
-| 8443 | TLS 1.3 line protocol from AB#361 (`JOB`, `REPORT`); unchanged | host harness, native clients that pin the cert |
+| 8443 | TLS 1.3 line protocol from AB#361 (`JOB`, `REPORT`), unchanged | host harness, native clients that pin the cert |
 | 8444 | sealed stream (this document), plain TCP | browsers through a relay, native clients |
 
-Targets a stream can open: `vnc` (127.0.0.1:5901), `cdp` (127.0.0.1:9222), `job` (the box's own
-`JOB` handler, for tests).
+Targets: `vnc` (127.0.0.1:5901), `cdp` (127.0.0.1:9222), `job` (the box's own `JOB` handler, for
+tests). Addresses are flags on boxd (`-target-vnc`, `-target-cdp`).
+
+## Key binding
+
+The box makes two keys at boot: the AB#361 ECDSA P-256 TLS key and a static X25519 key for the
+stream. Both are named in one binding object, the layout sealed secrets and the miner hotels use
+(cathedral-sandbox `docs/SEALED_SECRETS.md`):
+
+```
+binding = {"sealed_stream":{"schema":"sealed-stream/v1","x25519_public_b64":"<32 bytes, base64>"},
+           "tls_spki_sha256":"<hex>"}
+REPORT_DATA = sha256(canonical(binding)) || 0x00 * 32
+```
+
+canonical = sorted keys, compact separators, raw UTF-8 (Python `json.dumps(sort_keys=True,
+separators=(",", ":"), ensure_ascii=False)`; Go `encoding/json` with HTML escaping off). The box
+sends the canonical string itself, so the client hashes exactly those bytes. One verifier serves
+every lane; a `sealed_secrets` object sits beside `sealed_stream` when both ride in one box.
 
 ## Framing
 
-Every message on the wire is `u32 big-endian length || payload`, length at most 1 MiB. Handshake
-payloads are JSON with bytes as base64url (no padding). Data payloads are ciphertext.
+Every message on the wire is `u32 big-endian length || payload`, at most 1 MiB. Pre-handshake
+payloads are JSON with bytes as base64url (no padding). Handshake and data payloads are Noise.
 
-## Handshake
+## Handshake: Noise_NK_25519_AESGCM_SHA256
 
 ```
-C -> B   HELLO   {"v":1, "nonce_c":b64(32), "eph_c":b64(X25519 pub)}
-B -> C   ATTEST  {"v":1, "nonce_b":b64(32), "eph_b":b64(X25519 pub), "spki":b64(box P-256 SPKI DER),
-                  "report":b64(SNP report, 1184 bytes), "certs":{"vcek":b64 DER,"ask":b64 DER,"ark":b64 DER} (optional),
-                  "sig":b64(ECDSA P-256 SHA-256 signature, ASN.1 DER, over T1)}
-C -> B   OPEN    AES-GCM(k_c2b, n(c,0), {"target":"vnc"|"cdp"|"job", "ticket":b64 or ""}, aad = H1)
-B -> C   READY   AES-GCM(k_b2c, n(b,0), {"ok":true} or {"ok":false,"error":"..."}, aad = H1)
-then     DATA    AES-GCM(k_dir, n(dir,i), bytes, aad = dir byte), i from 1, each direction its own counter
+C -> B   HELLO   {"v":1}
+B -> C   ATTEST  {"v":1, "static":b64u(X25519 pub), "binding":"<canonical JSON>", "report":b64u(SNP report),
+                  "certs":{"vcek","ask","ark"} (optional), "dev":true (no report; test boxes only)}
+         client verifies the report (below) and that binding.sealed_stream names `static`
+C -> B   NK msg 1  e, es   payload {"target":"vnc"|"cdp"|"job", "ticket":"..."}   (encrypted under es)
+B -> C   NK msg 2  e, ee   payload {"ok":true} or {"ok":false,"error":"..."}      (key confirmation)
+then     DATA      AES-GCM frames from Split(): initiator sends with k1, responder with k2
 ```
 
-Transcript: `T1 = "sealed-stream/v1" || nonce_c || nonce_b || eph_c || eph_b || spki`, `H1 = sha256(T1)`.
+Prologue = `"sealed-stream/v1" || sha256(report)`, so the handshake hash binds the report. The
+target and ticket travel inside the first encrypted payload: never a bare first byte. Nothing is
+piped to 5901 or 9222 before message 2 confirms the keys.
 
-Keys: `ss = X25519(eph_c_priv, eph_b)`; `prk = HKDF-Extract(salt = H1, ikm = ss)`;
-`k_c2b = HKDF-Expand(prk, "sealed-stream/v1 c2b", 32)`; `k_b2c = HKDF-Expand(prk, "sealed-stream/v1 b2c", 32)`.
-HMAC-SHA-256 throughout.
+Nonces: 96 bits, `0x00 * 4 || u64 big-endian counter`, strictly in order; any gap or failed tag
+closes the stream. Max data frame 64 KiB. Rekey (Noise `REKEY`) every 2^20 frames per direction.
 
-Nonces: 12 bytes, `dir || 0x00 * 3 || u64 big-endian counter`, `dir` = 0x01 client to box, 0x02 box
-to client. OPEN and READY use counter 0; data starts at 1. A counter never repeats under one key;
-at 2^63 the side closes.
+## What the client verifies before NK message 1
 
-## What the client verifies before it sends OPEN
-
-1. `report[0x50:0x90] == sha256(spki) || 0x00 * 32` (the key in the handshake is the attested key).
+1. `sha256(binding bytes) || 0 * 32 == REPORT_DATA`, and `binding.sealed_stream.x25519_public_b64`
+   equals the static key presented (and `tls_spki_sha256` when the caller knows the TLS key).
 2. The report signature (ECDSA P-384, SHA-384, over `report[:0x2A0]`; r and s are 72-byte
    little-endian fields at 0x2A0 and 0x2E8) verifies with the VCEK.
-3. VCEK is signed by ASK, ASK by ARK, ARK by itself (RSA-PSS, SHA-384, salt 48), and sha256 of the ARK
-   certificate DER equals the pin ctcli uses (Genoa `4c6598d1…3db2f1`, `tee/fixtures/amd-genoa-ark.der`). VCEK comes from the
-   box's `certs`, or from AMD KDS by chip id and TCB (`report[0x1A0:0x1E0]`, `report[0x180:0x188]`)
-   through a cache the client is given, never from the relay's say-so.
-4. `report[0x90:0xC0]` (MEASUREMENT) is in the client's allowed list: the fingerprint AB#363
-   publishes. An empty list is a test mode and is shown as such.
-5. `sig` verifies over T1 with the key in `spki`.
+3. VCEK signed by ASK, ASK by ARK, ARK by itself (RSA-PSS, SHA-384, salt 48), and sha256 of the ARK
+   certificate DER equals the pin ctcli uses: Genoa `4c6598d1…3db2f1`, Milan `69d063b4…540bcd`.
+   VCEK comes from the box's `certs` or from AMD KDS by chip id and TCB through a cache the client owns.
+4. MEASUREMENT (`report[0x90:0xC0]`) is in the client's allowed list, the fingerprint AB#363
+   publishes. An empty list is test mode and is shown as such, never as a pass.
 
-Only then is `ss` derived. A client that cannot verify shows why and never sends OPEN.
+A client that cannot verify shows why and sends nothing further.
 
 ## Ticket
 
-The box authenticates the client with the ticket inside OPEN: Ed25519 signature by Cathedral over
-`{"room":..., "target":..., "exp":unix}` with the public key pinned in the box image. A box started
-with `-noticket` accepts an empty ticket; that mode exists for the private spike only and the box
-prints `NOTICKET` on its console at boot.
+NK gives the client's first message no freshness from the box, so a captured message 1 could be
+replayed to reopen the target. The ticket closes that: Ed25519 by Cathedral over
+`{"room","target","exp"}` as `base64url(JSON) "." base64url(sig)`, verified with the key pinned in
+the box, `target` equal to the requested target, `exp` at most 10 minutes ahead, and single use:
+the box remembers used tickets until they expire and refuses a repeat (`TICKET replay refused` on
+the console). A box started with `-noticket` accepts an empty ticket; that mode is for the private
+spike only and the box prints `NOTICKET` at boot.
 
-## Threats this covers and does not
+## Threats covered and not
 
 - Covered: a relay or network that reads or alters frames; a box that is not the measured image
-  (measurement check); a box whose key is not the attested one (REPORT_DATA binding); replay of a
-  handshake (fresh nonces and ephemeral keys on both sides).
-- Not covered: the host that runs the VM denying service; a client that chooses to accept any
-  measurement; the trust Cathedral's control plane keeps over the box's lifecycle. gVisor is not in
-  this path: the box is the room.
+  (measurement check); a box whose key is not the attested one (binding check); replay of the
+  handshake (single-use ticket); a client that was never attested to (it fails closed).
+- Not covered: the host that runs the VM denying service; a client that chooses an empty
+  measurement list; Cathedral's control plane keeping the box's lifecycle. gVisor is not in this
+  path: the box is the room.
 
-## Implementation
+## Implementation and tests
 
-- Box: `tee/boxd/main.go`, Go standard library only (X25519 via crypto/ecdh, HKDF via crypto/hmac),
-  so it builds on c48 without module downloads. `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build`.
-- Browser: `tee/web/sealed-stream.js` (WebCrypto only; a WebSocket-shaped object that noVNC's
-  `RFB` accepts as its transport) and `tee/web/snp-verify.js` (DER walker, chain and report checks).
-- Native: `tee/client/sealed_stream.py` (cryptography lib), used by the CDP shim that gives
-  Playwright a local `ws://` endpoint.
+- Box: `tee/boxd/` (Go, standard library only; `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build`).
+- Browser: `tee/web/sealed-stream.js` (Noise NK with WebCrypto; `SealedStream.websocketLike()` is a
+  WebSocket-shaped transport for noVNC's `RFB`) and `tee/web/snp-verify.js` (DER walker, chain and
+  report checks). Tests: `node tee/web/test-snp-verify.mjs`, `node tee/web/test-sealed-stream.mjs BOXD`.
+- Native: `tee/client/sealed_stream.py` (cryptography lib) and `tee/client/cdp_shim.py`, a local
+  TCP listener that opens one stream per connection so Playwright's `connect_over_cdp` and
+  browser-use work unchanged. Tests: `tee/client/test_sealed_stream.py BOXD`, `tee/client/test_cdp_shim.py`.
 - Relay for the spike: `websockify PORT BOX_IP:8444` on the host; it needs no change.
+
+Measured on the Mac against `boxd -dev` (no TEE, loopback): handshake 4 to 23 ms native, Playwright
+connect 98 ms, click 94 ms, two property reads 5 ms, all through the stream.
