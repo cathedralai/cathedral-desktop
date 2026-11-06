@@ -53,6 +53,16 @@ if (existsSync(join(fx, 'report.bin')) && existsSync(join(fx, 'vcek.der'))) {
     const bad = report.slice(); bad[0x90] ^= 0x01;
     await verifySnp({ report: bad, certs: { ark, ask, vcek }, binding }); check('tampered measurement refused', false);
   } catch (e) { check('tampered measurement refused', /signature/.test(e.message), e.message); }
+  // The fingerprint pin: the viewer passes fp= and an unlisted image must not render.
+  try {
+    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowedMeasurements: [rep.measurement] });
+    check('this measurement pinned: accepted, not test mode', r.ok && r.testMode === false, `testMode=${r.testMode}`);
+  } catch (e) { check('this measurement pinned', false, e.message); }
+  try {
+    const other = 'ff' + rep.measurement.slice(2);
+    await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowedMeasurements: [other] });
+    check('another measurement pinned: refused', false);
+  } catch (e) { check('another measurement pinned: refused', /measurement/i.test(e.message), e.message); }
 } else {
   console.log('skip real report checks: tee/fixtures/report.bin and vcek.der not present yet');
 }

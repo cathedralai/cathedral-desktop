@@ -52,6 +52,32 @@ try {
   check('dev box refused when attestation is required', false);
 } catch (e) { check('dev box refused when attestation is required', /no attestation/.test(e.message), e.message); }
 
+// The noVNC adapter, which is where the desktop was lost on c48 run 3: the box's
+// first bytes (the RFB banner) land while rfb.js is still being imported, and
+// noVNC runs its own open step at attach because readyState is already 1.
+try {
+  const pipe = tcpPipe(18444); await pipe.ready;
+  const s = await SealedStream.open({ pipe, target: 'job', verify: { allowDev: true } });
+  s.send(te.encode('JOB 5\n'));
+  await new Promise((r) => setTimeout(r, 300));            // reply arrives with nobody listening
+  check('frames with no listener are kept, not dropped', (s.pending || []).length === 1, `pending ${(s.pending || []).length}`);
+
+  const ws = SealedStream.websocketLike(s);
+  let opens = 0;
+  ws.onopen = () => { opens++; };                           // noVNC assigns these directly
+  const seen = [];
+  ws.onmessage = (e) => seen.push(td.decode(new Uint8Array(e.data)));
+  await new Promise((r) => setTimeout(r, 50));
+  check('the backlog reaches the listener that attached late', seen.join('') === 'DONE 5 42\n', JSON.stringify(seen));
+  check('no onopen of our own (noVNC fires its own at attach)', opens === 0, `${opens} opens`);
+  check('readyState is open, which is what makes it do that', ws.readyState === 1);
+
+  s.send(te.encode('JOB 6\n'));
+  await new Promise((r) => setTimeout(r, 300));
+  check('and later frames go straight through', seen.join('') === 'DONE 5 42\nDONE 6 42\n', JSON.stringify(seen));
+  s.close();
+} catch (e) { check('noVNC adapter', false, e.message); }
+
 box.kill();
 console.log(failures ? `${failures} failure(s)` : 'all checks passed');
 process.exit(failures ? 1 : 0);

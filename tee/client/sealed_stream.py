@@ -231,13 +231,23 @@ class Stream:
         self.w.close()
 
 
-async def open_stream(r: asyncio.StreamReader, w: asyncio.StreamWriter, target: str, verify: Verify, ticket: str = "", keep: str | None = None) -> Stream:
+async def open_stream(r: asyncio.StreamReader, w: asyncio.StreamWriter, target: str, verify: Verify,
+                      ticket: str = "", keep: str | None = None, mint=None) -> Stream:
+    """One sealed stream to one target.
+
+    ``mint`` takes the box's static key and returns a ticket, which is how a
+    client opens more than one stream: tickets are single use and name the box,
+    so they cannot be prepared before the box has introduced itself, and they
+    cannot be reused across connections (``mint_ticket.minter``).
+    """
     write_frame(w, json.dumps({"v": 1}).encode())
     await w.drain()
     att = json.loads(await read_frame(r))
     if "error" in att:
         raise RuntimeError(f"box: {att['error']}")
     rs = b64u_decode(att["static"])
+    if mint is not None:
+        ticket = mint(rs)
     report = b64u_decode(att["report"]) if att.get("report") else b""
     if not report:
         if not verify.allow_dev:

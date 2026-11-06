@@ -70,19 +70,25 @@ AB#593: the Playwright title and timings. Then Toby.
 ## Tickets (from image 3 onward)
 
 The image carries `/etc/boxd/ticket.pub`, so boxd no longer runs `-noticket`: every stream needs a
-single-use ticket. Mint one on the Mac with the private key in
-`~/Documents/TOOLS/.credentials/cathedral-tee-ticket-20261106.key`:
+single-use ticket. A ticket names the box it is for by the box's stream key, so `--box` is the box
+itself and the mint reads the key off it (it is in ATTEST, before any ticket is asked for):
 
 ```sh
-T=$(python3 tee/client/mint_ticket.py issue --key ~/Documents/TOOLS/.credentials/cathedral-tee-ticket-20261106.key --room BOXID --target vnc)
+K=~/Documents/TOOLS/.credentials/cathedral-tee-ticket-20261106.key
+T=$(python3 tee/client/mint_ticket.py issue --key $K --box BOXIP:8444 --target vnc)
 ```
 
-One ticket, one stream: the box refuses a repeat (`TICKET replay refused` on its console) and any
-expiry more than 10 minutes out. Mint per connection.
+One ticket, one stream: the box refuses a repeat (`TICKET replay refused`), a ticket minted for
+another box (`TICKET for another box refused`), and any expiry more than 10 minutes out. Anything
+that opens more than one stream mints per connection rather than carrying a ticket:
 
-- `capture_fixture.py --ticket-key <path>` mints its own.
-- `cdp_shim.py --ticket "$T"` (mint with `--target cdp`).
-- viewer: add `&ticket=$T` to the URL (`--target vnc`).
+- `capture_fixture.py --ticket-key $K` mints its own.
+- `cdp_shim.py --ticket-key $K` mints one per connection, which is what CDP needs: Chromium opens a
+  connection per target and reconnects freely, so a single `--ticket` serves the first and nothing
+  after it.
+- viewer: add `&ticket=$T` to the URL (`--target vnc`). The page cannot mint (the mint key stays off
+  the browser), so one ticket is one view: a reload needs a fresh `T`. AB#591's mint API is what
+  removes that step.
 
 ## VNC authentication
 

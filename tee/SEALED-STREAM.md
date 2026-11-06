@@ -77,11 +77,26 @@ A client that cannot verify shows why and sends nothing further.
 
 NK gives the client's first message no freshness from the box, so a captured message 1 could be
 replayed to reopen the target. The ticket closes that: Ed25519 by Cathedral over
-`{"room","target","exp"}` as `base64url(JSON) "." base64url(sig)`, verified with the key pinned in
-the box, `target` equal to the requested target, `exp` at most 10 minutes ahead, and single use:
-the box remembers used tickets until they expire and refuses a repeat (`TICKET replay refused` on
-the console). A box started with `-noticket` accepts an empty ticket; that mode is for the private
-spike only and the box prints `NOTICKET` at boot.
+`{"box","exp","nonce","target"}` as `base64url(JSON) "." base64url(sig)`, verified with the key
+pinned in the box, and refused unless all four hold:
+
+- `box` equals the box's own Noise static key, base64 as the binding spells it. The key is per boot
+  and per box, it is what REPORT_DATA commits to, and ATTEST hands it to the client before any
+  ticket is asked for, so a minter can always name it. A room id cannot do this job: it would have
+  to reach the box on its measured command line, which would give every box its own measurement,
+  and a ticket naming nothing opens every box that pins the same mint key.
+- `target` equals the requested target.
+- `exp` is at most 10 minutes ahead.
+- `nonce` is present. Without it two tickets minted in the same second for one target are
+  byte-identical and the second is refused as its own replay, which is what parallel connections
+  (CDP opens several) look like.
+
+Single use: the box remembers used tickets until they expire and refuses a repeat
+(`TICKET replay refused` on the console; `TICKET for another box refused` and `TICKET without a
+nonce refused` for the other two). One ticket is one stream, so a client that opens streams as it
+goes mints as it goes (`mint_ticket.minter` passed to `open_stream(mint=...)`). A box started with
+`-noticket` accepts an empty ticket; that mode is for the private spike only and the box prints
+`NOTICKET` at boot.
 
 ## Threats covered and not
 

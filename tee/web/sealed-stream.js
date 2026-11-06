@@ -197,13 +197,17 @@ export class SealedStream {
     s.loop();
     return s;
   }
-  constructor(pipe, frames) { this.pipe = pipe; this.frames = frames; this.onmessage = null; this.onclose = null; this.closed = false; this.sending = Promise.resolve(); }
+  constructor(pipe, frames) { this.pipe = pipe; this.frames = frames; this.onmessage = null; this.onclose = null; this.closed = false; this.sending = Promise.resolve(); this.pending = null; }
   async loop() {
     try {
       for (;;) {
         const ct = await this.frames.next();
         const pt = await this.recv_.decrypt(ct);
-        this.onmessage?.(pt);
+        // Plaintext can arrive before anyone is listening: the stream is open as
+        // soon as the handshake ends, and the VNC server's banner lands while
+        // rfb.js is still being imported. Dropping it loses the session.
+        if (this.onmessage) this.onmessage(pt);
+        else (this.pending ||= []).push(pt);
       }
     } catch (e) { this.close(e); }
   }
@@ -219,13 +223,24 @@ export class SealedStream {
   /** A WebSocket-shaped object for noVNC: `new RFB(el, SealedStream.websocketLike(stream))`. */
   static websocketLike(stream) {
     const ws = { binaryType: 'arraybuffer', protocol: 'binary', readyState: 1, bufferedAmount: 0,
-      onopen: null, onmessage: null, onclose: null, onerror: null,
+      onopen: null, onclose: null, onerror: null,
       send: (d) => stream.send(d instanceof ArrayBuffer ? new Uint8Array(d) : d),
       close: () => stream.close(),
       addEventListener(t, f) { ws['on' + t] = f; }, removeEventListener() {} };
-    stream.onmessage = (pt) => ws.onmessage?.({ data: pt.buffer.slice(pt.byteOffset, pt.byteOffset + pt.byteLength) });
+    // noVNC's Websock.attach assigns ws.onmessage directly, so the handover of
+    // frames buffered before it attached hangs off that assignment, not off a
+    // timer: whenever the handler lands, the backlog goes out right after it.
+    // Deferred to a microtask so the bytes arrive after attach has returned and
+    // RFB has run its open step, never from inside it.
+    let handler = null;
+    const flush = () => { for (const pt of (stream.pending || []).splice(0)) stream.onmessage(pt); };
+    Object.defineProperty(ws, 'onmessage', { enumerable: true, configurable: true,
+      get: () => handler, set: (f) => { handler = f; if (f) queueMicrotask(flush); } });
+    stream.onmessage = (pt) => handler?.({ data: pt.buffer.slice(pt.byteOffset, pt.byteOffset + pt.byteLength) });
     stream.onclose = (err) => { ws.readyState = 3; if (err) ws.onerror?.({ message: err.message }); ws.onclose?.({ code: err ? 1006 : 1000, reason: err?.message || '', wasClean: !err }); };
-    queueMicrotask(() => ws.onopen?.({}));
+    // No onopen here. readyState is 1 already, so RFB calls its open step itself
+    // when it attaches (core/rfb.js, "if (this._sock.readyState === 'open')"); a
+    // second open runs the handshake twice and fails the session.
     return ws;
   }
 }

@@ -43,7 +43,8 @@
   // Query: relay=ws(s)://host:port (websockify to the box's 8444), target=vnc|job, room=ID,
   //        fp=HEX[,HEX] allowed measurements (empty = test mode, shown), dev=1 accept a dev box,
   //        certs=URL base serving vcek.der for the chip (optional; else the box's certs or KDS via `kds=`),
-  //        ticket=<single-use ticket from mint_ticket.py>, vncpw=<only for a box whose x11vnc has a password>.
+  //        ticket=<single-use ticket from mint_ticket.py, one per view: a reload needs a fresh one>,
+  //        vncpw=<only for a box whose x11vnc has a password>.
   import { SealedStream, websocketPipe } from './sealed-stream.js';
   const q = new URLSearchParams(location.search);
   const relay = q.get('relay') || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/websockify');

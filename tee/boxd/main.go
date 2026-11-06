@@ -307,9 +307,9 @@ func resolveTarget(t string) (string, error) {
 	return "", errors.New("unknown target")
 }
 
-// ticketOK checks the Cathedral ticket: Ed25519 over {"room","target","exp"} with the pinned key,
-// then marks it used. NK gives the client's first message no freshness from the box, so a replayed
-// message 1 would reopen the target: single-use tickets with a short expiry close that.
+// ticketOK checks the Cathedral ticket: Ed25519 over {"box","target","exp","nonce"} with the pinned
+// key, then marks it used. NK gives the client's first message no freshness from the box, so a
+// replayed message 1 would reopen the target: single-use tickets with a short expiry close that.
 // Until the ticket mint exists, -noticket accepts an empty ticket and says so on the console.
 func ticketOK(box *boxState, open openMsg) bool {
 	if open.Ticket == "" {
@@ -318,7 +318,7 @@ func ticketOK(box *boxState, open openMsg) bool {
 	if box.ticketPub == nil {
 		return false
 	}
-	exp, ok := verifyTicket(box.ticketPub, open.Ticket, open.Target)
+	exp, ok := verifyTicket(box.ticketPub, open.Ticket, open.Target, box.staticPub)
 	if !ok {
 		return false
 	}
@@ -639,8 +639,15 @@ func hmacSHA256(key, data []byte) []byte {
 
 // ---- ticket (shape only until the mint exists)
 
-// verifyTicket checks shape, target, expiry (at most 10 minutes ahead) and signature; returns exp.
-func verifyTicket(pub []byte, ticket, target string) (int64, bool) {
+// verifyTicket checks shape, box, target, expiry (at most 10 minutes ahead) and signature; returns exp.
+//
+// The ticket names the box by its stream key, not by a room id. The key is this
+// box's and only this box's: it is made at boot, it is what REPORT_DATA commits
+// to, and the box hands it to the client in ATTEST before any ticket is asked
+// for, so a minter can always name it. A room id would have to reach the box on
+// its measured command line, which would give every box a different measurement,
+// and a ticket that names nothing opens every box that pins the same mint key.
+func verifyTicket(pub []byte, ticket, target string, staticPub []byte) (int64, bool) {
 	parts := strings.Split(ticket, ".")
 	if len(parts) != 2 {
 		return 0, false
@@ -651,12 +658,24 @@ func verifyTicket(pub []byte, ticket, target string) (int64, bool) {
 		return 0, false
 	}
 	var t struct {
-		Room   string `json:"room"`
+		Box    string `json:"box"`
 		Target string `json:"target"`
 		Exp    int64  `json:"exp"`
+		Nonce  string `json:"nonce"`
 	}
 	now := time.Now().Unix()
 	if json.Unmarshal(body, &t) != nil || t.Target != target || now > t.Exp || t.Exp > now+600 {
+		return 0, false
+	}
+	if t.Box != base64.StdEncoding.EncodeToString(staticPub) {
+		console("TICKET for another box refused")
+		return 0, false
+	}
+	// Two tickets minted in the same second for one target would otherwise be
+	// byte-identical, and the second would be refused as its own replay: the
+	// nonce is what makes parallel connections (CDP opens several) possible.
+	if t.Nonce == "" {
+		console("TICKET without a nonce refused")
 		return 0, false
 	}
 	if !ed25519Verify(pub, body, sig) {
