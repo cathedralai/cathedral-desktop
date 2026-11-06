@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Cathedral sealed desktop · attested</title>
+<style>
+  :root { --bg: #000; --panel: #0B0D11; --line: #222831; --ink: #ECE9E1; --body: #D6D2C8; --mute: #8E9AA6; --acc: #F06E4A; --ok: #3DD68C; --bad: #FF6B7D; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--body); font: 14px/1.4 Inter, system-ui, -apple-system, sans-serif; }
+  body { display: grid; grid-template-rows: 44px 1fr; }
+  header { display: flex; align-items: center; gap: 14px; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .mark { color: var(--ink); font-weight: 600; } .mark span { color: var(--mute); font-weight: 400; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; font: 12px/1 "JetBrains Mono", ui-monospace, monospace; color: var(--mute); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mute); }
+  .on .dot { background: var(--ok); } .off .dot { background: var(--bad); } .wait .dot { background: var(--acc); }
+  .chip b { color: var(--body); font-weight: 500; }
+  .right { margin-left: auto; display: flex; gap: 10px; }
+  main { position: relative; min-height: 0; } #screen { position: absolute; inset: 0; } #screen canvas { outline: none; }
+  .note { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px 24px; width: min(520px, 92vw); box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  .note h2 { margin: 0 0 6px; font-size: 16px; color: var(--ink); font-weight: 600; } .note p { margin: 0 0 8px; color: var(--mute); font-size: 13px; }
+  .note code { font: 12px "JetBrains Mono", monospace; color: var(--body); word-break: break-all; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="mark">Cathedral <span>sealed desktop</span></div>
+  <div id="attest" class="chip wait"><i class="dot"></i><span id="attest-text">verifying</span></div>
+  <div id="link" class="chip wait"><i class="dot"></i><span id="link-text">connecting</span></div>
+  <div class="right"><span class="chip" id="room" hidden>room <b id="room-id"></b></span></div>
+</header>
+<main>
+  <div id="screen"></div>
+  <div id="gone" class="note" hidden>
+    <h2 id="gone-title">Not connected</h2>
+    <p id="gone-why"></p>
+    <p><code id="gone-detail"></code></p>
+  </div>
+</main>
+<script type="module">
+  // Query: relay=ws(s)://host:port (websockify to the box's 8444), target=vnc|job, room=ID,
+  //        fp=HEX[,HEX] allowed measurements (empty = test mode, shown), dev=1 accept a dev box,
+  //        certs=URL base serving vcek.der for the chip (optional; else the box's certs or KDS via `kds=`).
+  import { SealedStream, websocketPipe } from './sealed-stream.js';
+  const q = new URLSearchParams(location.search);
+  const relay = q.get('relay') || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/websockify');
+  const target = q.get('target') || 'vnc';
+  const allowed = (q.get('fp') || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const set = (id, cls, text) => { const el = document.getElementById(id); el.className = 'chip ' + cls; document.getElementById(id + '-text').textContent = text; };
+  const gone = (title, why, detail = '') => { document.getElementById('gone-title').textContent = title; document.getElementById('gone-why').textContent = why; document.getElementById('gone-detail').textContent = detail; document.getElementById('gone').hidden = false; };
+  if (q.get('room')) { document.getElementById('room-id').textContent = q.get('room').slice(0, 8); document.getElementById('room').hidden = false; }
+  const fetchDer = async (url) => new Uint8Array(await (await fetch(url)).arrayBuffer());
+  const verify = { allowedMeasurements: allowed, allowDev: q.get('dev') === '1', product: q.get('product') || 'Genoa',
+    certs: { ark: await fetchDer('./fixtures/amd-genoa-ark.der').catch(() => undefined), ask: await fetchDer('./fixtures/amd-genoa-ask.der').catch(() => undefined) },
+    fetchVcek: q.get('kds') ? (url) => fetchDer(q.get('kds') + encodeURIComponent(url)) : (q.get('certs') ? () => fetchDer(q.get('certs') + '/vcek.der') : undefined) };
+  try {
+    const pipe = websocketPipe(relay);
+    await pipe.ready;
+    const stream = await SealedStream.open({ pipe, target, verify, onstatus: (m) => {
+      if (m.startsWith('attested')) set('attest', allowed.length ? 'on' : 'wait', m);
+      else if (m.startsWith('dev')) set('attest', 'off', 'dev box: not attested');
+      else set('link', 'wait', m);
+    } });
+    const a = stream.attestation;
+    if (a?.ok) set('attest', allowed.length ? 'on' : 'wait', `attested · ${a.measurement.slice(0, 12)}… · chip ${a.chipId.slice(0, 8)}${a.testMode ? ' · NO FINGERPRINT PINNED' : ''}`);
+    set('link', 'on', `sealed ${target}`);
+    window.sealedStream = stream;
+    if (target === 'vnc') {
+      const { default: RFB } = await import('./core/rfb.js');
+      const rfb = new RFB(document.getElementById('screen'), SealedStream.websocketLike(stream));
+      rfb.scaleViewport = true; rfb.background = '#000';
+      rfb.addEventListener('connect', () => rfb.focus());
+      rfb.addEventListener('disconnect', (e) => { set('link', 'off', 'offline'); gone('Disconnected', e.detail?.clean ? 'The box closed the desktop.' : 'The stream dropped.'); });
+    } else {
+      stream.onmessage = (pt) => { const el = document.createElement('pre'); el.textContent = new TextDecoder().decode(pt); document.getElementById('screen').appendChild(el); };
+      stream.send(new TextEncoder().encode('JOB 1\n'));
+    }
+  } catch (e) {
+    set('link', 'off', 'refused');
+    set('attest', 'off', 'not attested');
+    gone('Refused', 'This page will not show a desktop it cannot prove.', e.message);
+  }
+</script>
+</body>
+</html>
