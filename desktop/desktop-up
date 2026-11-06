@@ -1,0 +1,73 @@
+#!/bin/bash
+# Start the virtual desktop: Xvfb :1, openbox, tint2, x11vnc (localhost only), noVNC on 6080.
+# Flags: --tunnel      cloudflared quick tunnel to noVNC; URL written to /work/desktop-url.txt
+#        --res WxH     screen size (default 1280x800)
+#        --foreground  stay attached (daemons otherwise outlive the exec that started them)
+# VNC password: $VNC_PASSWORD, else generated once into /work/vnc-password (0600).
+set -u
+TUNNEL=0; FG=0; RES="${DESKTOP_RES:-1280x800}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tunnel) TUNNEL=1 ;;
+    --foreground) FG=1 ;;
+    --res) RES="$2"; shift ;;
+  esac
+  shift
+done
+export DISPLAY=:1
+mkdir -p /work /run/desktop /root/.config/openbox
+echo starting > /run/desktop/state
+# Right-click menu: terminal and browser (the Debian menu file is not installed).
+cat > /root/.config/openbox/menu.xml <<'MENU'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+  <menu id="root-menu" label="Cathedral desktop">
+    <item label="Terminal"><action name="Execute"><command>xterm -fa DejaVuSansMono -fs 11 -bg #1a1b26 -fg #c0caf5</command></action></item>
+    <item label="Browser (Chromium)"><action name="Execute"><command>browser</command></action></item>
+    <item label="Calculator"><action name="Execute"><command>xcalc</command></action></item>
+    <separator/>
+    <item label="Reconfigure"><action name="Reconfigure"/></item>
+  </menu>
+</openbox_menu>
+MENU
+if ! xdpyinfo >/dev/null 2>&1; then
+  setsid Xvfb :1 -screen 0 "${RES}x24" -nolisten tcp -ac +extension RANDR >/run/desktop/xvfb.log 2>&1 < /dev/null &
+  for _ in $(seq 1 100); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
+fi
+if pgrep -x openbox >/dev/null; then openbox --reconfigure; else setsid openbox >/run/desktop/openbox.log 2>&1 < /dev/null & sleep 0.5; fi
+pgrep -x tint2 >/dev/null || setsid tint2 >/run/desktop/tint2.log 2>&1 < /dev/null &
+# Background after the window manager is up, otherwise openbox repaints over it.
+xsetroot -solid '#1a1b26'
+feh --no-fehbg --bg-fill /opt/desktop/wallpaper.png >/dev/null 2>&1 || true
+PW="${VNC_PASSWORD:-}"
+if [ -z "$PW" ]; then
+  if [ ! -s /work/vnc-password ]; then
+    head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 12 > /work/vnc-password
+    chmod 600 /work/vnc-password
+  fi
+  PW="$(cat /work/vnc-password)"
+fi
+x11vnc -storepasswd "$PW" /run/desktop/vncpass >/dev/null 2>&1
+pgrep -x x11vnc >/dev/null || setsid x11vnc -display :1 -rfbauth /run/desktop/vncpass -rfbport 5901 -localhost -forever -shared -noxdamage -quiet >/run/desktop/x11vnc.log 2>&1 < /dev/null &
+pgrep -f websockify >/dev/null || setsid websockify --web /usr/share/novnc 6080 localhost:5901 >/run/desktop/websockify.log 2>&1 < /dev/null &
+URL=""
+if [ "$TUNNEL" = 1 ]; then
+  if [ -s /work/desktop-url.txt ] && pgrep -x cloudflared >/dev/null; then
+    URL="$(cat /work/desktop-url.txt)"
+  else
+    : > /run/desktop/cloudflared.log
+    setsid cloudflared tunnel --no-autoupdate --url http://localhost:6080 >/run/desktop/cloudflared.log 2>&1 < /dev/null &
+    for _ in $(seq 1 150); do
+      URL="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /run/desktop/cloudflared.log | head -1)"
+      [ -n "$URL" ] && break
+      sleep 0.2
+    done
+    [ -n "$URL" ] && URL="${URL}/vnc.html?autoconnect=1&resize=scale" && echo "$URL" > /work/desktop-url.txt
+  fi
+fi
+sleep 1
+echo ready > /run/desktop/state
+echo "desktop ready on :1 (${RES}); vnc 5901 localhost only; novnc 6080"
+[ -n "$URL" ] && echo "public: $URL"
+[ "$FG" = 1 ] && wait
+exit 0

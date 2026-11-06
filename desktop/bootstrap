@@ -1,0 +1,26 @@
+#!/bin/bash
+# One-time install of the desktop stack on a stock sealed room (Debian trixie base). Idempotent.
+# Run as root inside the room: bash /work/desktop/bootstrap
+set -eu
+export DEBIAN_FRONTEND=noninteractive
+t0=$(date +%s)
+if ! command -v Xvfb >/dev/null || ! command -v chromium >/dev/null || ! command -v cloudflared >/dev/null; then
+  apt-get -qq update
+  apt-get -qq install -y --no-install-recommends \
+    ca-certificates curl procps psmisc dbus-x11 \
+    xvfb x11-xserver-utils x11-utils x11-apps xdotool scrot imagemagick \
+    x11vnc novnc python3-websockify \
+    openbox tint2 feh xterm \
+    chromium fonts-dejavu fonts-noto-color-emoji >/dev/null
+  curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+  apt-get -qq install -y --no-install-recommends /tmp/cloudflared.deb >/dev/null
+  apt-get clean
+  : > /tmp/cloudflared.deb
+fi
+mkdir -p /opt/desktop /work
+[ -s /opt/desktop/wallpaper.png ] || convert -size 1280x800 gradient:'#1a1b26-#24283b' \
+  -fill '#7aa2f7' -gravity center -pointsize 30 -annotate +0-24 'Cathedral sealed desktop' \
+  -fill '#a9b1d6' -pointsize 16 -annotate +0+18 'AMD SEV-SNP  /  gVisor  /  every action receipted' \
+  /opt/desktop/wallpaper.png 2>/dev/null || true
+install -m 755 /work/desktop/desktop-up /work/desktop/shot /work/desktop/browser /usr/local/bin/
+echo "bootstrap done in $(( $(date +%s) - t0 ))s: $(Xvfb -version 2>&1 | head -1 | tr -d '\n'); $(chromium --version 2>/dev/null | tr -d '\n'); $(cloudflared --version 2>/dev/null | head -1)"

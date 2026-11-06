@@ -1,0 +1,54 @@
+#!/bin/bash
+# ctdesk: a Cathedral sealed desktop from the command line (customer path only: ctcli exec/download).
+#   ctdesk new [--size sealed-4x8] [--hours 2] [--tunnel]   create a room, bootstrap, start the desktop
+#   ctdesk up ID [--tunnel]                                  (re)start the desktop in an existing room
+#   ctdesk url ID                                            print the public noVNC URL and the VNC password
+#   ctdesk shot ID [out.png]                                 screenshot to a file (default ./screen.png) and open it
+#   ctdesk act ID -- <xdotool args>                          one input action, e.g. act ID -- mousemove 100 200 click 1
+#   ctdesk run ID -- <command>                               run any command in the room
+#   ctdesk down ID                                           delete the room
+# Honours CTCLI_CONFIG for the ctcli login to use.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+die() { echo "ctdesk: $*" >&2; exit 1; }
+command -v ctcli >/dev/null || die "ctcli not found"
+payload() { tar czf - -C "$HERE" desktop | base64 | tr -d '\n'; }
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  new)
+    size=sealed-4x8; hours=2; tunnel=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --size) size="$2"; shift ;;
+        --hours) hours="$2"; shift ;;
+        --tunnel) tunnel="--tunnel" ;;
+        *) die "unknown flag $1" ;;
+      esac
+      shift
+    done
+    life=$(( hours * 3600 ))
+    out="$(ctcli --json sandbox create --template "$size" --network internet --lifetime "$life" --wait \
+            --label owner=ctdesk --label purpose=desktop --request-id "ctdesk-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM")"
+    id="$(printf '%s' "$out" | python3 -c 'import sys,re; s=sys.stdin.read(); m=re.search(r"\"(?:sandbox_)?id\"\s*:\s*\"([0-9a-f-]{36})\"", s); print(m.group(1) if m else "")')"
+    [ -n "$id" ] || { echo "$out" >&2; die "create failed"; }
+    echo "room $id ($size, ${hours}h, internet)"
+    echo "bootstrapping (2-5 min)..."
+    ctcli sandbox exec "$id" --timeout 900 -- bash -c "mkdir -p /work && echo $(payload) | base64 -d | tar xzf - -C /work && bash /work/desktop/bootstrap"
+    ctcli sandbox exec "$id" --timeout 60 -- desktop-up $tunnel
+    [ -n "$tunnel" ] && "$0" url "$id"
+    echo "next: $0 shot $id   |   $0 act $id -- mousemove 640 400 click 1   |   $0 down $id"
+    ;;
+  up)   id="${1:?ID}"; shift; ctcli sandbox exec "$id" --timeout 60 -- desktop-up "$@" ;;
+  url)  id="${1:?ID}"
+        echo "url:      $(ctcli sandbox download "$id" /work/desktop-url.txt -o - 2>/dev/null || echo '(no tunnel; run: ctdesk up ID --tunnel)')"
+        echo "password: $(ctcli sandbox download "$id" /work/vnc-password -o - 2>/dev/null || echo '(desktop not started)')" ;;
+  shot) id="${1:?ID}"; out="${2:-screen.png}"
+        ctcli sandbox exec "$id" --timeout 40 -- shot --b64 2>/dev/null | tr -d '\n' | base64 -d > "$out"
+        echo "$out: $(file -b "$out" | cut -d, -f1-2)"; command -v open >/dev/null && open "$out" || true ;;
+  act)  id="${1:?ID}"; shift; [ "${1:-}" = "--" ] && shift
+        ctcli sandbox exec "$id" --timeout 40 -- env DISPLAY=:1 xdotool "$@" ;;
+  run)  id="${1:?ID}"; shift; [ "${1:-}" = "--" ] && shift
+        ctcli sandbox exec "$id" --timeout 120 -- "$@" ;;
+  down) id="${1:?ID}"; ctcli sandbox delete "$id" --yes ;;
+  *) sed -n '2,10p' "$0"; exit 1 ;;
+esac

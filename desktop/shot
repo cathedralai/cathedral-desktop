@@ -1,0 +1,6 @@
+#!/bin/bash
+# Screenshot the virtual desktop to /work/screen.png. --b64 prints it base64 on stdout for one-call capture.
+export DISPLAY=:1
+out=/work/screen.png
+scrot -o "$out" >/dev/null 2>&1 || import -window root "$out"
+if [ "${1:-}" = "--b64" ]; then base64 -w0 "$out"; else ls -l "$out"; fi
