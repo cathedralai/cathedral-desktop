@@ -49,6 +49,7 @@ install -m 644 "$TOP/desktop/theme/tint2rc" "$TOP/desktop/theme/picom.conf" "$TO
 install -m 755 "$TOP/desktop/theme/apply-openbox.py" "$TOP/desktop/theme/wallpaper.sh" "$R/opt/desktop/"
 install -m 644 "$TOP/desktop/theme/cathedral-terminal.desktop" "$TOP/desktop/theme/cathedral-browser.desktop" "$R/usr/share/applications/"
 install -m 755 "$HERE/box-init" "$R/sbin/box-init"
+install -m 755 "$HERE/box-dhcp" "$R/sbin/box-dhcp"
 install -m 644 "$TOP/tee/fixtures/amd-genoa-ark.der" "$R/etc/boxd/ark.der"
 install -m 644 "$TOP/tee/fixtures/amd-genoa-ask.der" "$R/etc/boxd/ask.der"
 # Ticket public key (tee/client/mint_ticket.py keygen); without it the box must run with -noticket.
