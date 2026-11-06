@@ -28,6 +28,9 @@ def main():
     ap.add_argument("--stream", help="HOST:PORT of the box's 8444 (default: same host, port+1)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--product", default="Genoa")
+    ap.add_argument("--ticket-key", help="Ed25519 private key to mint a single-use ticket with "
+                                         "(TOOLS/.credentials/cathedral-tee-ticket-20261106.key); "
+                                         "omit only for a box running -noticket")
     a = ap.parse_args()
     host, port = a.box.rsplit(":", 1)
     port = int(port)
@@ -62,7 +65,17 @@ def main():
         from cryptography import x509
         from cryptography.hazmat.primitives import serialization
         spki = x509.load_der_x509_certificate(cert).public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
-        s = await open_stream(r, w, target="job", verify=Verify(product=a.product, vcek_der=vcek, tls_spki=spki))
+        ticket = ""
+        if a.ticket_key:
+            import base64 as _b64, json as _json, time as _time
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+            key = Ed25519PrivateKey.from_private_bytes(open(a.ticket_key, "rb").read())
+            body = _json.dumps({"room": "fixture", "target": "job", "exp": int(_time.time()) + 120},
+                               separators=(",", ":"), sort_keys=True).encode()
+            b64u = lambda b: _b64.urlsafe_b64encode(b).rstrip(b"=").decode()
+            ticket = f"{b64u(body)}.{b64u(key.sign(body))}"
+        s = await open_stream(r, w, target="job", verify=Verify(product=a.product, vcek_der=vcek, tls_spki=spki),
+                              ticket=ticket, keep=os.path.join(a.out, "binding.json"))
         await s.send(b"JOB 1\n")
         reply = await s.recv()
         print(f"sealed stream: attestation {s.attestation}, job reply {reply!r}")

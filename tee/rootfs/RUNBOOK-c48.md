@@ -66,3 +66,26 @@ Record connect and action latency for AB#593. `HALT` on the console powers the b
 AB#363: the MEASUREMENT and what the command line contains. AB#364: boot-to-desktop time, the
 console lines, one box at 2 vCPU / 4 GiB. AB#592: the chip screenshot and the desktop screenshot.
 AB#593: the Playwright title and timings. Then Toby.
+
+## Tickets (from image 3 onward)
+
+The image carries `/etc/boxd/ticket.pub`, so boxd no longer runs `-noticket`: every stream needs a
+single-use ticket. Mint one on the Mac with the private key in
+`~/Documents/TOOLS/.credentials/cathedral-tee-ticket-20261106.key`:
+
+```sh
+T=$(python3 tee/client/mint_ticket.py issue --key ~/Documents/TOOLS/.credentials/cathedral-tee-ticket-20261106.key --room BOXID --target vnc)
+```
+
+One ticket, one stream: the box refuses a repeat (`TICKET replay refused` on its console) and any
+expiry more than 10 minutes out. Mint per connection.
+
+- `capture_fixture.py --ticket-key <path>` mints its own.
+- `cdp_shim.py --ticket "$T"` (mint with `--target cdp`).
+- viewer: add `&ticket=$T` to the URL (`--target vnc`).
+
+## VNC authentication
+
+The TEE box runs x11vnc with no password (`desktop-up --vnc-auth none`, set by `box-init`): it
+listens on localhost inside the box and the sealed stream, attested and ticketed, is the gate. The
+viewer still handles a box that asks for one, and the public-tunnel path keeps its password.

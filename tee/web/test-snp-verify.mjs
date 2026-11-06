@@ -38,9 +38,12 @@ if (existsSync(join(fx, 'report.bin')) && existsSync(join(fx, 'vcek.der'))) {
   const rep = parseReport(report);
   console.log(`report v${rep.version} chip ${rep.chipId.slice(0, 16)}… measurement ${rep.measurement.slice(0, 16)}… kds ${kdsVcekUrl(rep)}`);
   let binding;
-  if (existsSync(join(fx, 'cert.der'))) {
-    const spki = parseCert(read('cert.der')).spki;
-    binding = { first: await sha256(spki), second: null };
+  if (existsSync(join(fx, 'binding.json'))) {
+    // REPORT_DATA = sha256(canonical binding) || zeros; the file holds those exact bytes.
+    binding = { first: await sha256(new Uint8Array(readFileSync(join(fx, 'binding.json')))), second: null };
+  } else if (existsSync(join(fx, 'cert.der'))) {
+    console.log('note: no binding.json, checking the pre-binding layout sha256(TLS SPKI)||zeros');
+    binding = { first: await sha256(parseCert(read('cert.der')).spki), second: null };
   }
   try {
     const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowedMeasurements: [] });

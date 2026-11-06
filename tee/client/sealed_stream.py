@@ -231,7 +231,7 @@ class Stream:
         self.w.close()
 
 
-async def open_stream(r: asyncio.StreamReader, w: asyncio.StreamWriter, target: str, verify: Verify, ticket: str = "") -> Stream:
+async def open_stream(r: asyncio.StreamReader, w: asyncio.StreamWriter, target: str, verify: Verify, ticket: str = "", keep: str | None = None) -> Stream:
     write_frame(w, json.dumps({"v": 1}).encode())
     await w.drain()
     att = json.loads(await read_frame(r))
@@ -245,6 +245,8 @@ async def open_stream(r: asyncio.StreamReader, w: asyncio.StreamWriter, target: 
         attestation = {"ok": False, "dev": True}
     else:
         attestation = verify_snp(report, rs, att["binding"], verify)
+        if keep:  # the exact bytes REPORT_DATA commits to, for offline tests
+            open(keep, "w").write(att["binding"])
     hs = Handshake(PROLOGUE + hashlib.sha256(report).digest(), rs)
     write_frame(w, hs.write_message1(json.dumps({"target": target, "ticket": ticket}).encode()))
     await w.drain()

@@ -5,16 +5,20 @@
 #        --room ID     sandbox id shown on the page and written to /work/desktop.json
 #        --res WxH     screen size (default 1280x800)
 #        --restart     restart the window manager, panel, compositor, VNC and web server (keeps Xvfb, apps, tunnel)
+#        --vnc-auth none  x11vnc with no password. Only where something else is the gate: in a TEE
+#                      box the sealed stream (attested, ticketed) is, and x11vnc is localhost only.
+#                      The default, password, is what the public tunnel path needs.
 #        --foreground  stay attached (daemons otherwise outlive the exec that started them)
 # VNC password: $VNC_PASSWORD, else generated once into /work/vnc-password (0600).
 set -u
-TUNNEL=0; FG=0; RESTART=0; ROOM="${DESKTOP_ROOM:-}"; RES="${DESKTOP_RES:-1280x800}"
+TUNNEL=0; FG=0; RESTART=0; ROOM="${DESKTOP_ROOM:-}"; RES="${DESKTOP_RES:-1280x800}"; VNC_AUTH="${DESKTOP_VNC_AUTH:-password}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --tunnel) TUNNEL=1 ;;
     --foreground) FG=1 ;;
     --restart) RESTART=1 ;;
     --room) ROOM="$2"; shift ;;
+    --vnc-auth) VNC_AUTH="$2"; shift ;;
     --res) RES="$2"; shift ;;
   esac
   shift
@@ -60,16 +64,22 @@ if [ ! -s /opt/desktop/wallpaper.png ] || [ "$RESTART" = 1 ]; then
 fi
 xsetroot -solid '#0B0D11'
 feh --no-fehbg --bg-fill /opt/desktop/wallpaper.png >/dev/null 2>&1 || true
-PW="${VNC_PASSWORD:-}"
-if [ -z "$PW" ]; then
-  if [ ! -s /work/vnc-password ]; then
-    head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 12 > /work/vnc-password
-    chmod 600 /work/vnc-password
+PW=""
+if [ "$VNC_AUTH" = none ]; then
+  VNC_ARGS="-nopw"
+else
+  PW="${VNC_PASSWORD:-}"
+  if [ -z "$PW" ]; then
+    if [ ! -s /work/vnc-password ]; then
+      head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 12 > /work/vnc-password
+      chmod 600 /work/vnc-password
+    fi
+    PW="$(cat /work/vnc-password)"
   fi
-  PW="$(cat /work/vnc-password)"
+  x11vnc -storepasswd "$PW" /run/desktop/vncpass >/dev/null 2>&1
+  VNC_ARGS="-rfbauth /run/desktop/vncpass"
 fi
-x11vnc -storepasswd "$PW" /run/desktop/vncpass >/dev/null 2>&1
-pgrep -x x11vnc >/dev/null || setsid x11vnc -display :1 -rfbauth /run/desktop/vncpass -rfbport 5901 -localhost -forever -shared -noxdamage -quiet >/run/desktop/x11vnc.log 2>&1 < /dev/null &
+pgrep -x x11vnc >/dev/null || setsid x11vnc -display :1 $VNC_ARGS -rfbport 5901 -localhost -forever -shared -noxdamage -quiet >/run/desktop/x11vnc.log 2>&1 < /dev/null &
 WEB=/usr/share/novnc; [ -f /opt/desktop/web/index.html ] && WEB=/opt/desktop/web
 pgrep -f websockify >/dev/null || setsid websockify --web "$WEB" 6080 localhost:5901 >/run/desktop/websockify.log 2>&1 < /dev/null &
 BASE=""
@@ -96,7 +106,7 @@ if [ -n "$BASE" ]; then
 fi
 sleep 1
 echo ready > /run/desktop/state
-echo "desktop ready on :1 (${RES}); vnc 5901 localhost only; web 6080 ($WEB)"
+echo "desktop ready on :1 (${RES}); vnc 5901 localhost only, auth ${VNC_AUTH}; web 6080 ($WEB)"
 [ -n "$URL" ] && echo "public: $URL"
 [ "$FG" = 1 ] && wait
 exit 0

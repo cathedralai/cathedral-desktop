@@ -42,7 +42,8 @@
 <script type="module">
   // Query: relay=ws(s)://host:port (websockify to the box's 8444), target=vnc|job, room=ID,
   //        fp=HEX[,HEX] allowed measurements (empty = test mode, shown), dev=1 accept a dev box,
-  //        certs=URL base serving vcek.der for the chip (optional; else the box's certs or KDS via `kds=`).
+  //        certs=URL base serving vcek.der for the chip (optional; else the box's certs or KDS via `kds=`),
+  //        ticket=<single-use ticket from mint_ticket.py>, vncpw=<only for a box whose x11vnc has a password>.
   import { SealedStream, websocketPipe } from './sealed-stream.js';
   const q = new URLSearchParams(location.search);
   const relay = q.get('relay') || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/websockify');
@@ -58,7 +59,7 @@
   try {
     const pipe = websocketPipe(relay);
     await pipe.ready;
-    const stream = await SealedStream.open({ pipe, target, verify, onstatus: (m) => {
+    const stream = await SealedStream.open({ pipe, target, ticket: q.get('ticket') || '', verify, onstatus: (m) => {
       if (m.startsWith('attested')) set('attest', allowed.length ? 'on' : 'wait', m);
       else if (m.startsWith('dev')) set('attest', 'off', 'dev box: not attested');
       else set('link', 'wait', m);
@@ -69,9 +70,19 @@
     window.sealedStream = stream;
     if (target === 'vnc') {
       const { default: RFB } = await import('./core/rfb.js');
-      const rfb = new RFB(document.getElementById('screen'), SealedStream.websocketLike(stream));
+      const rfb = new RFB(document.getElementById('screen'), SealedStream.websocketLike(stream),
+                          q.get('vncpw') ? { credentials: { password: q.get('vncpw') } } : undefined);
       rfb.scaleViewport = true; rfb.background = '#000';
-      rfb.addEventListener('connect', () => rfb.focus());
+      rfb.addEventListener('connect', () => { set('link', 'on', `sealed ${target}`); rfb.focus(); });
+      // A box whose x11vnc wants a password: ask for it rather than letting the session time out.
+      // A TEE box runs x11vnc with no password; the sealed stream is the gate.
+      rfb.addEventListener('credentialsrequired', () => {
+        set('link', 'wait', 'desktop password');
+        const pw = window.prompt('This desktop asks for a VNC password.');
+        if (pw === null) { stream.close(); gone('Not connected', 'The desktop needs a password.'); return; }
+        rfb.sendCredentials({ password: pw });
+      });
+      rfb.addEventListener('securityfailure', (e) => { set('link', 'off', 'refused'); gone('Refused', 'The desktop refused the password.', e.detail?.reason || ''); });
       rfb.addEventListener('disconnect', (e) => { set('link', 'off', 'offline'); gone('Disconnected', e.detail?.clean ? 'The box closed the desktop.' : 'The stream dropped.'); });
     } else {
       stream.onmessage = (pt) => { const el = document.createElement('pre'); el.textContent = new TextDecoder().decode(pt); document.getElementById('screen').appendChild(el); };

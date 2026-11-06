@@ -53,7 +53,13 @@ install -m 755 "$HERE/box-dhcp" "$R/sbin/box-dhcp"
 install -m 644 "$TOP/tee/fixtures/amd-genoa-ark.der" "$R/etc/boxd/ark.der"
 install -m 644 "$TOP/tee/fixtures/amd-genoa-ask.der" "$R/etc/boxd/ask.der"
 # Ticket public key (tee/client/mint_ticket.py keygen); without it the box must run with -noticket.
-[ -n "${TICKET_PUB:-}" ] && install -m 644 "$TICKET_PUB" "$R/etc/boxd/ticket.pub" && log "ticket.pub installed"
+TICKET_PUB="${TICKET_PUB:-$TOP/tee/fixtures/ticket.pub}"
+if [ -s "$TICKET_PUB" ]; then
+  install -m 644 "$TICKET_PUB" "$R/etc/boxd/ticket.pub"
+  log "ticket.pub installed ($(sha256sum "$TICKET_PUB" | cut -c1-16))"
+else
+  log "no ticket.pub: the box will run with -noticket"
+fi
 mkdir -p "$R/work" "$R/run" "$R/root/.config"
 chroot "$R" /opt/desktop/wallpaper.sh /opt/desktop/wallpaper.png 1280x800 >/dev/null 2>&1 || log "wallpaper render skipped"
 chroot "$R" fc-cache -f >/dev/null 2>&1 || true
