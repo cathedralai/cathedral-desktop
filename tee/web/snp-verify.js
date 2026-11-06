@@ -1,0 +1,163 @@
+// AMD SEV-SNP attestation report verification with WebCrypto only.
+// Runs in browsers and in Node 20+ (globalThis.crypto.subtle). No dependencies.
+//
+// Checks, in order: the ARK is the pinned AMD root; ARK signs itself, ASK, and ASK signs the VCEK
+// (RSA-PSS SHA-384, salt 48); the VCEK (ECDSA P-384) signs the report; REPORT_DATA binds the key
+// the box presented; MEASUREMENT is one the caller allows. Offsets follow the SNP ABI (report
+// version 2 and 3, 1184 bytes), the same ones kit/snpverify.py uses.
+
+const subtle = globalThis.crypto.subtle;
+
+/** sha256 of the ARK SubjectPublicKeyInfo, from https://kdsintf.amd.com/vcek/v1/<product>/cert_chain
+ *  (tee/fixtures/amd-genoa-ark.der, computed 6 Nov 2026). */
+export const AMD_ARK_SPKI_SHA256 = {
+  Genoa: '429a69c9422aa258ee4d8db5fcda9c6470ef15f8cd5a9cebd6cbc7d90b863831',
+};
+
+export const hex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, '0')).join('');
+export const fromHex = (s) => Uint8Array.from(s.match(/.{2}/g) || [], (h) => parseInt(h, 16));
+export async function sha256(bytes) { return new Uint8Array(await subtle.digest('SHA-256', bytes)); }
+export function equal(a, b) {
+  if (a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a[i] ^ b[i];
+  return d === 0;
+}
+
+// ---- minimal DER walking (enough for X.509 v3 certificates)
+
+function tlv(b, off) {
+  if (off + 2 > b.length) throw new Error('DER: truncated');
+  const tag = b[off];
+  let len = b[off + 1];
+  let p = off + 2;
+  if (len & 0x80) {
+    const n = len & 0x7f;
+    if (n === 0 || n > 4) throw new Error('DER: bad length');
+    len = 0;
+    for (let i = 0; i < n; i++) len = len * 256 + b[p++];
+  }
+  if (p + len > b.length) throw new Error('DER: length past end');
+  return { tag, hdr: off, start: p, end: p + len };
+}
+
+function seq(b, node) {
+  const out = [];
+  let p = node.start;
+  while (p < node.end) { const c = tlv(b, p); out.push(c); p = c.end; }
+  return out;
+}
+
+const slice = (b, node, withHeader = true) => b.slice(withHeader ? node.hdr : node.start, node.end);
+
+/** Split a DER certificate into the parts verification needs. */
+export function parseCert(der) {
+  const b = der instanceof Uint8Array ? der : new Uint8Array(der);
+  const cert = tlv(b, 0);
+  if (cert.tag !== 0x30) throw new Error('DER: certificate is not a SEQUENCE');
+  const [tbs, , sigVal] = seq(b, cert);
+  const fields = seq(b, tbs);
+  const i = fields[0].tag === 0xa0 ? 1 : 0; // explicit version present
+  if (fields.length < i + 6) throw new Error('DER: tbsCertificate too short');
+  return {
+    tbs: slice(b, tbs),
+    issuer: slice(b, fields[i + 2]),
+    subject: slice(b, fields[i + 4]),
+    spki: slice(b, fields[i + 5]),
+    signature: b.slice(sigVal.start + 1, sigVal.end), // BIT STRING: skip the unused-bits byte
+  };
+}
+
+async function rsaPssVerify(signerSpki, signature, data) {
+  const key = await subtle.importKey('spki', signerSpki, { name: 'RSA-PSS', hash: 'SHA-384' }, false, ['verify']);
+  return subtle.verify({ name: 'RSA-PSS', saltLength: 48 }, key, signature, data);
+}
+
+/** Verify ARK (pinned, self-signed) -> ASK -> VCEK. `vcek` may be omitted to check only the AMD pair. */
+export async function verifyAmdChain({ ark, ask, vcek }, product = 'Genoa') {
+  const A = parseCert(ark);
+  const S = parseCert(ask);
+  const pin = hex(await sha256(A.spki));
+  if (pin !== AMD_ARK_SPKI_SHA256[product]) throw new Error(`ARK is not the pinned AMD ${product} root (${pin.slice(0, 12)})`);
+  if (!(await rsaPssVerify(A.spki, A.signature, A.tbs))) throw new Error('ARK self-signature failed');
+  if (!(await rsaPssVerify(A.spki, S.signature, S.tbs))) throw new Error('ASK is not signed by the ARK');
+  if (!vcek) return { arkPin: pin, askSpki: S.spki, vcekSpki: null };
+  const V = parseCert(vcek);
+  if (!(await rsaPssVerify(S.spki, V.signature, V.tbs))) throw new Error('VCEK is not signed by the ASK');
+  return { arkPin: pin, askSpki: S.spki, vcekSpki: V.spki };
+}
+
+// ---- the report
+
+export const REPORT_LEN = 0x2A0 + 144;
+
+export function parseReport(bytes) {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (b.length < REPORT_LEN) throw new Error(`report is ${b.length} bytes, expected at least ${REPORT_LEN}`);
+  const u32 = (o) => b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24);
+  return {
+    version: u32(0),
+    guestSvn: u32(4),
+    policy: hex(b.slice(8, 16).reverse()),
+    vmpl: u32(0x30),
+    reportData: b.slice(0x50, 0x90),
+    measurement: hex(b.slice(0x90, 0xC0)),
+    hostData: hex(b.slice(0xC0, 0xE0)),
+    reportId: hex(b.slice(0x140, 0x160)),
+    reportedTcb: b.slice(0x180, 0x188),
+    chipId: hex(b.slice(0x1A0, 0x1E0)),
+    signed: b.slice(0, 0x2A0),
+    r: b.slice(0x2A0, 0x2A0 + 72),
+    s: b.slice(0x2E8, 0x2E8 + 72),
+  };
+}
+
+/** Where AMD KDS serves the VCEK for this chip at this TCB (cache it; KDS rate-limits). */
+export function kdsVcekUrl(report, product = 'Genoa') {
+  const t = report.reportedTcb;
+  return `https://kdsintf.amd.com/vcek/v1/${product}/${report.chipId}?blSPL=${t[0]}&teeSPL=${t[1]}&snpSPL=${t[6]}&ucodeSPL=${t[7]}`;
+}
+
+function leToBe(le, n) {
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) out[n - 1 - i] = le[i];
+  return out;
+}
+
+export async function verifyReportSignature(report, vcekSpki) {
+  const key = await subtle.importKey('spki', vcekSpki, { name: 'ECDSA', namedCurve: 'P-384' }, false, ['verify']);
+  const raw = new Uint8Array(96);
+  raw.set(leToBe(report.r, 48), 0);
+  raw.set(leToBe(report.s, 48), 48);
+  return subtle.verify({ name: 'ECDSA', hash: 'SHA-384' }, key, raw, report.signed);
+}
+
+/**
+ * Full check. `binding` says what REPORT_DATA must equal: { first: 32 bytes, second: 32 bytes | null }
+ * (null = must be zero; AB#361 boxes put sha256(TLS SPKI) first and zeros second). `allowedMeasurements`
+ * is a list of 96-hex strings; an empty list is reported as test mode, not as a pass.
+ */
+export async function verifySnp({ report, certs, product = 'Genoa', binding, allowedMeasurements = [] }) {
+  const rep = parseReport(report);
+  const chain = await verifyAmdChain(certs, product);
+  if (!chain.vcekSpki) throw new Error('VCEK missing');
+  if (!(await verifyReportSignature(rep, chain.vcekSpki))) throw new Error('report signature does not verify with the VCEK');
+  if (binding) {
+    const want = new Uint8Array(64);
+    want.set(binding.first, 0);
+    if (binding.second) want.set(binding.second, 32);
+    if (!equal(rep.reportData, want)) throw new Error('REPORT_DATA does not bind the presented key');
+  }
+  const measured = allowedMeasurements.length > 0;
+  if (measured && !allowedMeasurements.includes(rep.measurement)) throw new Error(`MEASUREMENT ${rep.measurement.slice(0, 16)} is not an allowed fingerprint`);
+  return {
+    ok: true,
+    testMode: !measured,
+    version: rep.version,
+    measurement: rep.measurement,
+    chipId: rep.chipId,
+    reportedTcb: hex(rep.reportedTcb),
+    policy: rep.policy,
+    arkPin: chain.arkPin,
+  };
+}
