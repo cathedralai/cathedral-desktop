@@ -52,8 +52,8 @@ at 2^63 the side closes.
 1. `report[0x50:0x90] == sha256(spki) || 0x00 * 32` (the key in the handshake is the attested key).
 2. The report signature (ECDSA P-384, SHA-384, over `report[:0x2A0]`; r and s are 72-byte
    little-endian fields at 0x2A0 and 0x2E8) verifies with the VCEK.
-3. VCEK is signed by ASK, ASK by ARK, ARK by itself (RSA-PSS, SHA-384, salt 48), and the ARK's SPKI
-   hash equals the pinned AMD Genoa root (`tee/fixtures/amd-genoa-ark.der`). VCEK comes from the
+3. VCEK is signed by ASK, ASK by ARK, ARK by itself (RSA-PSS, SHA-384, salt 48), and sha256 of the ARK
+   certificate DER equals the pin ctcli uses (Genoa `4c6598d1…3db2f1`, `tee/fixtures/amd-genoa-ark.der`). VCEK comes from the
    box's `certs`, or from AMD KDS by chip id and TCB (`report[0x1A0:0x1E0]`, `report[0x180:0x188]`)
    through a cache the client is given, never from the relay's say-so.
 4. `report[0x90:0xC0]` (MEASUREMENT) is in the client's allowed list: the fingerprint AB#363

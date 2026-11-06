@@ -8,10 +8,11 @@
 
 const subtle = globalThis.crypto.subtle;
 
-/** sha256 of the ARK SubjectPublicKeyInfo, from https://kdsintf.amd.com/vcek/v1/<product>/cert_chain
- *  (tee/fixtures/amd-genoa-ark.der, computed 6 Nov 2026). */
-export const AMD_ARK_SPKI_SHA256 = {
-  Genoa: '429a69c9422aa258ee4d8db5fcda9c6470ef15f8cd5a9cebd6cbc7d90b863831',
+/** sha256 of the ARK certificate DER from https://kdsintf.amd.com/vcek/v1/<product>/cert_chain: the same
+ *  pin ctcli, go-sev-guest and virtee/sev use (tee/fixtures/amd-genoa-ark.der, checked 6 Nov 2026). */
+export const AMD_ARK_SHA256 = {
+  Genoa: '4c6598d19c18719c5dfd4a7d335f674e5bfe1d8f800cea2cf270c10d103db2f1',
+  Milan: '69d063b45344d26a2e94e1f4210de49ef555308287d4c174445c95639a540bcd',
 };
 
 export const hex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, '0')).join('');
@@ -77,8 +78,8 @@ async function rsaPssVerify(signerSpki, signature, data) {
 export async function verifyAmdChain({ ark, ask, vcek }, product = 'Genoa') {
   const A = parseCert(ark);
   const S = parseCert(ask);
-  const pin = hex(await sha256(A.spki));
-  if (pin !== AMD_ARK_SPKI_SHA256[product]) throw new Error(`ARK is not the pinned AMD ${product} root (${pin.slice(0, 12)})`);
+  const pin = hex(await sha256(ark instanceof Uint8Array ? ark : new Uint8Array(ark)));
+  if (pin !== AMD_ARK_SHA256[product]) throw new Error(`ARK is not the pinned AMD ${product} root (${pin.slice(0, 12)})`);
   if (!(await rsaPssVerify(A.spki, A.signature, A.tbs))) throw new Error('ARK self-signature failed');
   if (!(await rsaPssVerify(A.spki, S.signature, S.tbs))) throw new Error('ASK is not signed by the ARK');
   if (!vcek) return { arkPin: pin, askSpki: S.spki, vcekSpki: null };
