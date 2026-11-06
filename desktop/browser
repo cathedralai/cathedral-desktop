@@ -1,5 +1,6 @@
 #!/bin/bash
-# Launch Chromium on the virtual desktop with flags that work as root under gVisor (small /dev/shm, no GPU).
+# Launch Chromium on the virtual desktop with flags that work as root under gVisor (small /dev/shm, no GPU),
+# dark UI, maximised, and without the "unsupported flag" bar (--test-type).
 export DISPLAY=:1
-exec chromium --no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run --no-default-browser-check \
-  --disable-features=TranslateUI --window-position=0,0 --window-size=1280,760 "$@" >/run/desktop/chromium.log 2>&1
+exec chromium --no-sandbox --test-type --disable-gpu --disable-dev-shm-usage --no-first-run --no-default-browser-check \
+  --force-dark-mode --enable-features=WebUIDarkMode --disable-features=TranslateUI --start-maximized "$@" >/run/desktop/chromium.log 2>&1

@@ -34,11 +34,11 @@ case "$cmd" in
     echo "room $id ($size, ${hours}h, internet)"
     echo "bootstrapping (2-5 min)..."
     ctcli sandbox exec "$id" --timeout 900 -- bash -c "mkdir -p /work && echo $(payload) | base64 -d | tar xzf - -C /work && bash /work/desktop/bootstrap"
-    ctcli sandbox exec "$id" --timeout 60 -- desktop-up $tunnel
+    ctcli sandbox exec "$id" --timeout 60 -- desktop-up --room "$id" $tunnel
     [ -n "$tunnel" ] && "$0" url "$id"
     echo "next: $0 shot $id   |   $0 act $id -- mousemove 640 400 click 1   |   $0 down $id"
     ;;
-  up)   id="${1:?ID}"; shift; ctcli sandbox exec "$id" --timeout 60 -- desktop-up "$@" ;;
+  up)   id="${1:?ID}"; shift; ctcli sandbox exec "$id" --timeout 60 -- desktop-up --room "$id" "$@" ;;
   url)  id="${1:?ID}"
         echo "url:      $(ctcli sandbox download "$id" /work/desktop-url.txt -o - 2>/dev/null || echo '(no tunnel; run: ctdesk up ID --tunnel)')"
         echo "password: $(ctcli sandbox exec "$id" --timeout 20 -- cat /work/vnc-password 2>/dev/null || echo '(desktop not started)')" ;;
