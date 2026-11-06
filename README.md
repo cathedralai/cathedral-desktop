@@ -44,14 +44,14 @@ Screenshots and the receipt log of a run land in `runs/<timestamp>/`.
 | `desktop/browser` | Chromium with the flags that work as root under gVisor |
 | `ctdesk` | the CLI above, customer path only (`ctcli sandbox exec/download`) |
 | `agent/cathedral_computer_use.py` | computer-use loop; one receipted exec per action |
-| `Dockerfile`, `build-context.sh` | the same stack as an image, for `ctcli sandbox image-import` of a registry reference |
+| `Dockerfile`, `build-context.sh` | the same stack as an image, kept for the day image-import opens on the sealed pool |
 | `evidence/` | screenshots from live rooms |
 
 ## Sealed pool facts this relies on (6 Nov 2026)
 
-- `ctcli sandbox image-build` is closed: ENV and COPY are rejected, and a FROM+RUN-only Dockerfile
-  returns `sandbox_capacity_unavailable` (`sealed_only`). Custom images reach the pool only through
-  `image-import` of a registry reference, so the desktop installs itself at runtime instead.
+- Custom images are closed on the sealed pool today: `image-build` rejects ENV and COPY, and both a
+  FROM+RUN-only `image-build` and `image-import` of a registry reference return
+  `sandbox_capacity_unavailable` (`sealed_only`). So the desktop installs itself at runtime instead.
 - `ctcli sandbox process start` is `unsupported_on_sealed_pool`, but background children of an
   exec survive the exec. `desktop-up` starts everything with `setsid` and returns.
 - `--network internet` gives real egress (Debian mirrors, GitHub, Cloudflare). The customer default
