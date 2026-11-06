@@ -55,7 +55,7 @@ mkdir -p "$R/work" "$R/run" "$R/root/.config"
 chroot "$R" /opt/desktop/wallpaper.sh /opt/desktop/wallpaper.png 1280x800 >/dev/null 2>&1 || log "wallpaper render skipped"
 chroot "$R" fc-cache -f >/dev/null 2>&1 || true
 : > "$R/etc/machine-id"
-chroot "$R" sh -c 'dpkg-query -W -f="${Package} ${Version}\n"' | sort > "$WORK/desktop.manifest"
+chroot "$R" dpkg-query -W | sort > "$WORK/desktop.manifest"
 
 log "squashfs"
 mkdir -p "$OUT"
