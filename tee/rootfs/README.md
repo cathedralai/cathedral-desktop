@@ -7,12 +7,34 @@ whole rootfs and the AB#363 fingerprint stays one number.
 ## Build
 
 ```sh
-bash tee/rootfs/build-desktop-rootfs.sh /work/rootfs-out      # root, amd64 Debian 13, internet
+bash tee/rootfs/build-desktop-rootfs.sh /work/rootfs-out      # root, amd64 Linux, internet
 ```
 
 Builds boxd from `tee/boxd`, runs mmdebstrap (trixie, minbase + the desktop packages), installs the
 cathedral-desktop files, renders the wallpaper, makes the squashfs (zstd), formats dm-verity with a
 fixed salt and no superblock, verifies it, and writes `desktop.dm-create`.
+
+## Reproducible
+
+Same source tree + same `SNAPSHOT` = same `desktop.squashfs` and root hash, on any host. That is
+what lets anyone recompute the AB#363 measurement instead of trusting ours.
+
+- Every package comes from one snapshot.debian.org timestamp (`SNAPSHOT`, default in the script),
+  and `SOURCE_DATE_EPOCH` is that timestamp.
+- The build tools come from the same snapshot: the script bootstraps mmdebstrap (two debs pinned
+  by sha256), makes a trixie builder chroot, and runs the image build inside it. The host only needs
+  perl, apt, dpkg-deb, curl and unshare (Debian or Ubuntu). The host's own mksquashfs or Go never
+  touch the image.
+- boxd builds with `-trimpath -buildvcs=false -buildid=` and `GOTOOLCHAIN=local`.
+- Before mksquashfs the script normalises what a build leaves behind: `/etc/hostname`
+  (`sealed-box`), `/etc/resolv.conf`, machine-id, logs (truncated), apt lists and caches, ldconfig
+  aux-cache, `__pycache__`, the wallpaper's PNG date chunks. Every mtime goes to 0 before `fc-cache`,
+  matching what the squashfs stores, so the font caches are identical and still valid at boot.
+- `desktop.manifest` starts with the snapshot, `SOURCE_DATE_EPOCH`, the builder tool versions and
+  the boxd sha256, then every package and version in the image.
+
+To check a published root hash: check out the commit, run the script with a fresh `WORK`, compare
+`desktop.roothash`. A new `SNAPSHOT` (for package updates) gives a new hash on purpose.
 
 ## Boot (for the kit on c48)
 

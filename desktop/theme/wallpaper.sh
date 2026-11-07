@@ -1,6 +1,7 @@
 #!/bin/bash
 # Render the Cathedral wallpaper with ImageMagick 7: near-black base, one soft coral glow, wordmark and caption.
 # Usage: wallpaper.sh OUT.png [WxH]
+# No PNG date/time chunks: the rootfs build renders this, and the image must be the same bytes every build.
 set -eu
 out="${1:?OUT.png}"; size="${2:-1280x800}"
 w="${size%x*}"; h="${size#*x}"
@@ -20,5 +21,5 @@ magick -size "${size}" xc:'#0B0D11' \
   -font "$bold" -pointsize $(( h / 11 )) -fill '#ECE9E1' -gravity northwest -annotate "+$(( w * 6 / 100 ))+$(( h * 66 / 100 ))" 'Cathedral' \
   -font "$regular" -pointsize $(( h / 44 )) -fill '#8E9AA6' -annotate "+$(( w * 6 / 100 + 4 ))+$(( h * 66 / 100 + h / 11 + h / 40 ))" 'Sealed desktop.  Every click, key and screenshot is a signed receipt.' \
   -font "$mono" -pointsize $(( h / 57 )) -fill '#F06E4A' -annotate "+$(( w * 6 / 100 + 4 ))+$(( h * 66 / 100 + h / 11 + h / 40 + h / 24 ))" 'AMD SEV-SNP  /  gVisor  /  cathedral.computer' \
-  "$out"
+  -define png:exclude-chunks=date,time "$out"
 echo "wallpaper $out ($size)"
