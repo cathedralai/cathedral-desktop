@@ -26,11 +26,20 @@ done
 export DISPLAY=:1 XDG_CONFIG_HOME=/root/.config
 mkdir -p /work /run/desktop /root/.config/openbox /root/.config/gtk-3.0 /root/.config/xfce4/terminal
 echo starting > /run/desktop/state
-# A process that is still exiting must not count as running, or the start
-# checks below skip it and the desktop is left without it once it exits.
+# pgrep also lists zombies, and in a sealed room pid 1 is `sleep infinity`, which never
+# reaps them: a killed openbox stays listed forever (seen live 10 Nov, state Z, ppid 1).
+# So count a process as running only when it exists and is not a zombie. Every start
+# check below uses this, or a dead process would stop its replacement from starting.
+running() {
+  for pid in $(pgrep "$@"); do
+    st="$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f1)"
+    [ -n "$st" ] && [ "$st" != Z ] && return 0
+  done
+  return 1
+}
+# A process that is still exiting must not count as running either, so --restart waits.
 desktop_procs_alive() {
-  pgrep -x openbox >/dev/null || pgrep -x tint2 >/dev/null || pgrep -x picom >/dev/null \
-    || pgrep -x x11vnc >/dev/null || pgrep -f websockify >/dev/null
+  running -x openbox || running -x tint2 || running -x picom || running -x x11vnc || running -f websockify
 }
 if [ "$RESTART" = 1 ]; then
   pkill -x openbox; pkill -x tint2; pkill -x picom; pkill -x x11vnc; pkill -f websockify
@@ -61,11 +70,11 @@ if ! xdpyinfo >/dev/null 2>&1; then
   setsid Xvfb :1 -screen 0 "${RES}x24" -nolisten tcp -ac +extension RANDR >/run/desktop/xvfb.log 2>&1 < /dev/null &
   for _ in $(seq 1 100); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
 fi
-if pgrep -x openbox >/dev/null; then openbox --reconfigure; else setsid openbox >/run/desktop/openbox.log 2>&1 < /dev/null & sleep 0.6; fi
-if ! pgrep -x picom >/dev/null && command -v picom >/dev/null; then
+if running -x openbox; then openbox --reconfigure; else setsid openbox >/run/desktop/openbox.log 2>&1 < /dev/null & sleep 0.6; fi
+if ! running -x picom && command -v picom >/dev/null; then
   setsid picom --config /opt/desktop/picom.conf >/run/desktop/picom.log 2>&1 < /dev/null &
 fi
-if ! pgrep -x tint2 >/dev/null; then
+if ! running -x tint2; then
   if [ -f /opt/desktop/tint2rc ]; then setsid tint2 -c /opt/desktop/tint2rc >/run/desktop/tint2.log 2>&1 < /dev/null &
   else setsid tint2 >/run/desktop/tint2.log 2>&1 < /dev/null & fi
 fi
@@ -90,12 +99,12 @@ else
   x11vnc -storepasswd "$PW" /run/desktop/vncpass >/dev/null 2>&1
   VNC_ARGS="-rfbauth /run/desktop/vncpass"
 fi
-pgrep -x x11vnc >/dev/null || setsid x11vnc -display :1 $VNC_ARGS -rfbport 5901 -localhost -forever -shared -noxdamage -quiet >/run/desktop/x11vnc.log 2>&1 < /dev/null &
+running -x x11vnc || setsid x11vnc -display :1 $VNC_ARGS -rfbport 5901 -localhost -forever -shared -noxdamage -quiet >/run/desktop/x11vnc.log 2>&1 < /dev/null &
 WEB=/usr/share/novnc; [ -f /opt/desktop/web/index.html ] && WEB=/opt/desktop/web
-pgrep -f websockify >/dev/null || setsid websockify --web "$WEB" 6080 localhost:5901 >/run/desktop/websockify.log 2>&1 < /dev/null &
+running -f websockify || setsid websockify --web "$WEB" 6080 localhost:5901 >/run/desktop/websockify.log 2>&1 < /dev/null &
 BASE=""
 if [ "$TUNNEL" = 1 ]; then
-  if pgrep -x cloudflared >/dev/null && [ -s /run/desktop/cloudflared.log ]; then
+  if running -x cloudflared && [ -s /run/desktop/cloudflared.log ]; then
     BASE="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /run/desktop/cloudflared.log | head -1)"
   fi
   if [ -z "$BASE" ]; then
