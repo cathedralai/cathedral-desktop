@@ -26,9 +26,20 @@ done
 export DISPLAY=:1 XDG_CONFIG_HOME=/root/.config
 mkdir -p /work /run/desktop /root/.config/openbox /root/.config/gtk-3.0 /root/.config/xfce4/terminal
 echo starting > /run/desktop/state
+# A process that is still exiting must not count as running, or the start
+# checks below skip it and the desktop is left without it once it exits.
+desktop_procs_alive() {
+  pgrep -x openbox >/dev/null || pgrep -x tint2 >/dev/null || pgrep -x picom >/dev/null \
+    || pgrep -x x11vnc >/dev/null || pgrep -f websockify >/dev/null
+}
 if [ "$RESTART" = 1 ]; then
   pkill -x openbox; pkill -x tint2; pkill -x picom; pkill -x x11vnc; pkill -f websockify
-  sleep 0.5
+  for _ in $(seq 1 50); do desktop_procs_alive || break; sleep 0.1; done
+  if desktop_procs_alive; then
+    pkill -9 -x openbox; pkill -9 -x tint2; pkill -9 -x picom; pkill -9 -x x11vnc; pkill -9 -f websockify
+    for _ in $(seq 1 20); do desktop_procs_alive || break; sleep 0.1; done
+  fi
+  if desktop_procs_alive; then echo "desktop-up: old desktop processes did not exit" >&2; echo failed > /run/desktop/state; exit 1; fi
 fi
 # Right-click menu: terminal and browser (the Debian menu file is not installed).
 cat > /root/.config/openbox/menu.xml <<'MENU'

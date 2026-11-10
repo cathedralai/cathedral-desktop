@@ -4,6 +4,11 @@ A Linux desktop inside a Cathedral sealed sandbox, driven by a computer-use agen
 public API. Every click, keystroke and screenshot is one `ctcli sandbox exec`, so Cathedral signs a
 receipt for each step. Tracked as ADO AB#573 under AB#56 (mission M-D).
 
+**Status: a spike and demo, not a Cathedral product.** On cathedral.computer the streamed desktop
+(computer-use) is still marked coming soon, and no sealed desktop evidence is published. The
+product path is AB#421 (preview URL with TLS in the guest) and AB#425 (streams through the edge).
+Until one of those ships with published evidence, describe this as a demo you run yourself.
+
 What it is: Xvfb + openbox + picom + tint2 in the Cathedral look (Inter, JetBrains Mono, one coral
 accent), Chromium, xfce4-terminal, xdotool and scrot inside a stock sealed room (AMD SEV-SNP host,
 gVisor room). x11vnc serves the display on localhost only; a branded noVNC page sits in front of it;

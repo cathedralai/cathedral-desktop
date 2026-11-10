@@ -144,56 +144,70 @@ def main() -> int:
         shots += 1
         return b64
 
-    for launch in args.launch:
-        room.exec(["bash", "-c", f"export DISPLAY=:1; setsid {launch} >/dev/null 2>&1 < /dev/null &"])
-        time.sleep(3)
-
-    tools = [{"type": "computer_toolset_20260801", "configs": {"zoom": {"enabled": False}}}]
-    messages = [{"role": "user", "content": [{"type": "text", "text": args.task}, image_block(snap())]}]
     outcome = "max turns reached"
-    for turn in range(1, args.max_turns + 1):
-        resp = client.beta.messages.create(
-            model=args.model,
-            max_tokens=4096,
-            system=SYSTEM,
-            tools=tools,
-            messages=messages,
-            betas=["server-side-fallback-2026-07-01"],
-            extra_body={"fallbacks": "default"},
-        )
-        messages.append({"role": "assistant", "content": resp.content})
-        for b in resp.content:
-            if b.type == "text" and b.text.strip():
-                print(f"[turn {turn}] claude: {b.text.strip()}")
-        if resp.stop_reason == "refusal":
-            outcome = f"refusal: {getattr(resp, 'stop_details', None)}"
-            break
-        tool_uses = [b for b in resp.content if b.type == "tool_use"]
-        if resp.stop_reason != "tool_use" or not tool_uses:
-            outcome = f"done ({resp.stop_reason})"
-            break
-        results, failed = [], False
-        for tu in tool_uses:
-            base = {"type": "tool_result", "tool_use_id": tu.id, "toolset_name": "computer"}
-            if failed:
-                results.append({**base, "is_error": True, "content": "Not executed: an earlier computer action in this turn failed."})
-                continue
-            inp = dict(tu.input or {})
-            try:
-                r = do_action(room, tu.name, inp)
-                content = [image_block(snap())] if r == "image" else [{"type": "text", "text": r}]
-                results.append({**base, "content": content})
-                rid = room.receipts[-1]["request_id"]
-                print(f"[turn {turn}] {tu.name} {json.dumps(inp)}  receipt {rid}")
-            except Exception as e:  # report to the model, stop the batch
-                failed = True
-                results.append({**base, "is_error": True, "content": [{"type": "text", "text": f"{type(e).__name__}: {e}"[:500]}]})
-                print(f"[turn {turn}] {tu.name} failed: {e}", file=sys.stderr)
-        if tool_uses[-1].name != "screenshot" and not failed:
-            results[-1]["content"] = list(results[-1]["content"]) + [image_block(snap())]
-        messages.append({"role": "user", "content": results})
 
-    (run_dir / "receipts.json").write_text(json.dumps({"sandbox": room.id, "task": args.task, "outcome": outcome, "execs": room.receipts}, indent=2))
+    def write_log(complete: bool = False) -> None:
+        # Written after every receipted action and once more at the end, so a run
+        # that fails (model API error, screenshot failure, Ctrl-C) keeps its audit trail.
+        (run_dir / "receipts.json").write_text(json.dumps(
+            {"sandbox": room.id, "task": args.task, "outcome": outcome, "complete": complete,
+             "execs": room.receipts}, indent=2))
+
+    try:
+        for launch in args.launch:
+            room.exec(["bash", "-c", f"export DISPLAY=:1; setsid {launch} >/dev/null 2>&1 < /dev/null &"])
+            time.sleep(3)
+
+        tools = [{"type": "computer_toolset_20260801", "configs": {"zoom": {"enabled": False}}}]
+        messages = [{"role": "user", "content": [{"type": "text", "text": args.task}, image_block(snap())]}]
+        for turn in range(1, args.max_turns + 1):
+            resp = client.beta.messages.create(
+                model=args.model,
+                max_tokens=4096,
+                system=SYSTEM,
+                tools=tools,
+                messages=messages,
+                betas=["server-side-fallback-2026-07-01"],
+                extra_body={"fallbacks": "default"},
+            )
+            messages.append({"role": "assistant", "content": resp.content})
+            for b in resp.content:
+                if b.type == "text" and b.text.strip():
+                    print(f"[turn {turn}] claude: {b.text.strip()}")
+            if resp.stop_reason == "refusal":
+                outcome = f"refusal: {getattr(resp, 'stop_details', None)}"
+                break
+            tool_uses = [b for b in resp.content if b.type == "tool_use"]
+            if resp.stop_reason != "tool_use" or not tool_uses:
+                outcome = f"done ({resp.stop_reason})"
+                break
+            results, failed = [], False
+            for tu in tool_uses:
+                base = {"type": "tool_result", "tool_use_id": tu.id, "toolset_name": "computer"}
+                if failed:
+                    results.append({**base, "is_error": True, "content": "Not executed: an earlier computer action in this turn failed."})
+                    continue
+                inp = dict(tu.input or {})
+                try:
+                    r = do_action(room, tu.name, inp)
+                    content = [image_block(snap())] if r == "image" else [{"type": "text", "text": r}]
+                    results.append({**base, "content": content})
+                    rid = room.receipts[-1]["request_id"]
+                    print(f"[turn {turn}] {tu.name} {json.dumps(inp)}  receipt {rid}")
+                    write_log()
+                except Exception as e:  # report to the model, stop the batch
+                    failed = True
+                    results.append({**base, "is_error": True, "content": [{"type": "text", "text": f"{type(e).__name__}: {e}"[:500]}]})
+                    print(f"[turn {turn}] {tu.name} failed: {e}", file=sys.stderr)
+            if tool_uses[-1].name != "screenshot" and not failed:
+                results[-1]["content"] = list(results[-1]["content"]) + [image_block(snap())]
+            messages.append({"role": "user", "content": results})
+
+    except BaseException as exc:
+        outcome = f"error: {type(exc).__name__}: {exc}"[:300]
+        raise
+    finally:
+        write_log(complete=True)
     print(f"{outcome}; {len(room.receipts)} receipted execs, {shots} screenshots in {run_dir}")
     return 0
 
