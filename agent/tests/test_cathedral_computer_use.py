@@ -26,6 +26,10 @@ class FakeRoom:
         self.receipts.append({"request_id": f"shot-{len(self.receipts)}", "argv": ["shot"], "rc": 0})
         return PNG
 
+    def xdo(self, *args):
+        self.receipts.append({"request_id": f"action-{len(self.receipts)}", "argv": list(args), "rc": 0})
+        return ""
+
 
 class AgentLoopStatusTests(unittest.TestCase):
     def setUp(self):
@@ -79,6 +83,22 @@ class AgentLoopStatusTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertFalse(log["complete"])
         self.assertEqual(log["outcome"], "max turns reached")
+
+    def test_computer_toolset_action_batch_then_end_turn(self):
+        click = types.SimpleNamespace(
+            type="tool_use", id="call-1", name="left_click", toolset_name="computer",
+            input={"coordinate": [12, 34]},
+        )
+        screenshot = types.SimpleNamespace(
+            type="tool_use", id="call-2", name="screenshot", toolset_name="computer", input={},
+        )
+        action = types.SimpleNamespace(stop_reason="tool_use", content=[click, screenshot])
+        done = types.SimpleNamespace(stop_reason="end_turn", content=[])
+        code, log = self.run_loop([action, done], max_turns=2)
+        self.assertEqual(code, 0)
+        self.assertTrue(log["complete"])
+        self.assertEqual([item["request_id"] for item in log["execs"]], ["shot-0", "action-1", "shot-2"])
+        self.assertEqual(log["execs"][1]["argv"], ["mousemove", 12, 34, "click", 1])
 
     def test_api_error_keeps_log_incomplete(self):
         def fail(**_kwargs):
