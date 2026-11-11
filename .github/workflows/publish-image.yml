@@ -1,10 +1,13 @@
-# Build the prebuilt desktop image and push it to GHCR, by hand only.
+# Build the prebuilt desktop image and push it to GHCR: by hand, or when a tag named image-v* is pushed
+# (a tag run uses this file at the tagged commit, so it works before the workflow is on main).
 # The package stays as GHCR creates it (private for this repo). Making it public, which the sealed pool
 # needs to pull it, is a separate human decision in the package settings, not part of this workflow.
 name: publish-image
 
 on:
   workflow_dispatch:
+  push:
+    tags: ['image-v*']
 
 permissions:
   contents: read
