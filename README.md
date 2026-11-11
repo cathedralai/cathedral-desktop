@@ -36,11 +36,20 @@ Agent loop (Claude computer toolset, `claude-opus-5-5`; needs `ANTHROPIC_API_KEY
 ```sh
 uv venv .venv && uv pip install --python .venv/bin/python anthropic
 .venv/bin/python agent/cathedral_computer_use.py --sandbox ID \
-  --launch "browser https://cathedral.computer" \
-  --task "Open the Pricing page and read me the price of a sealed 2x4 sandbox"
+  --max-turns 5 \
+  --task "Open a terminal and run uname -a"
 ```
 
-Screenshots and the receipt log of a run land in `runs/<timestamp>/`.
+Screenshots and `receipts.json` land in `runs/<timestamp>/`. The log records exec request IDs, not
+signed receipt IDs; `complete: true` means the agent ended normally, not that the receipts passed
+verification. Before claiming a live proof, download the sandbox evidence and check it offline:
+
+```sh
+ctcli sandbox evidence ID -o bundle.json
+ctcli receipt verify --bundle bundle.json
+```
+
+Keep the bundle with the run log, record the verifier verdict, then delete the test sandbox.
 
 ## Prebuilt image
 
