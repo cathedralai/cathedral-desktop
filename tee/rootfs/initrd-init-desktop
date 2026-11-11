@@ -1,0 +1,20 @@
+#!/bin/busybox sh
+# Initrd init for the desktop TEE box (replaces kit/rootfs-net/init). The kernel builds /dev/dm-0 from
+# dm-mod.create= on the command line (verity over /dev/vda, hashes on /dev/vdb, root hash measured);
+# this mounts it read-only, puts a tmpfs overlay on top, and hands over to the rootfs's /sbin/box-init.
+# Needs in the kernel: SQUASHFS, DM_VERITY, DM_INIT, OVERLAY_FS, VIRTIO_BLK built in.
+/bin/busybox --install -s /bin
+mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev
+stty -F /dev/ttyS0 raw -echo 2>/dev/null
+insmod /lib/modules/tsm_report.ko 2>/dev/null; insmod /lib/modules/sev-guest.ko 2>/dev/null
+i=0; while [ ! -e /dev/dm-0 ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
+mkdir -p /lower /rw /newroot
+if ! mount -t squashfs -o ro /dev/dm-0 /lower; then
+  echo "ROOTFS verity mount failed uptime=$(cut -d' ' -f1 /proc/uptime)" > /dev/ttyS0
+  sleep 5; poweroff -f
+fi
+mount -t tmpfs -o size=2g tmpfs /rw; mkdir -p /rw/upper /rw/work
+mount -t overlay overlay -o lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work /newroot
+echo "ROOTFS ok uptime=$(cut -d' ' -f1 /proc/uptime)" > /dev/ttyS0
+mount --move /proc /newroot/proc; mount --move /sys /newroot/sys; mount --move /dev /newroot/dev
+exec switch_root /newroot /sbin/box-init

@@ -4,9 +4,17 @@ A Linux desktop inside a Cathedral sealed sandbox, driven by a computer-use agen
 public API. Every click, keystroke and screenshot is one `ctcli sandbox exec`, so Cathedral signs a
 receipt for each step. Tracked as ADO AB#573 under AB#56 (mission M-D).
 
-What it is: Xvfb + openbox + tint2, Chromium, xterm, xdotool and scrot inside a stock sealed room
-(AMD SEV-SNP host, gVisor room). x11vnc serves the display on localhost only; noVNC sits in front
-of it; an optional cloudflared quick tunnel makes noVNC reachable from a browser.
+**Status: a spike and demo, not a Cathedral product.** On cathedral.computer the streamed desktop
+(computer-use) is still marked coming soon, and no sealed desktop evidence is published. The
+product path is AB#421 (preview URL with TLS in the guest) and AB#425 (streams through the edge).
+Until one of those ships with published evidence, describe this as a demo you run yourself.
+
+What it is: Xvfb + openbox + picom + tint2 in the Cathedral look (Inter, JetBrains Mono, one coral
+accent), Chromium, xfce4-terminal, xdotool and scrot inside a stock sealed room (AMD SEV-SNP host,
+gVisor room). x11vnc serves the display on localhost only; a branded noVNC page sits in front of it;
+an optional cloudflared quick tunnel makes that page reachable from a browser. The link carries the
+VNC password in the URL fragment, so one click opens the live desktop with no prompt and the password
+never reaches the tunnel or the server.
 
 What it is not: not Omarchy. Try Omarchy is a Mac app (QEMU on Apple's Hypervisor, aarch64 image)
 and cannot run inside a gVisor room. Hyprland headless under gVisor is untested and a follow-up.
@@ -15,11 +23,11 @@ and cannot run inside a gVisor room. Hyprland headless under gVisor is untested 
 
 ```sh
 # ctcli 0.5.19+, logged in (CTCLI_CONFIG picks the login file)
-./ctdesk new --size sealed-4x8 --hours 2 --tunnel   # create, bootstrap (about 60 s), start, print URL + password
+./ctdesk new --size sealed-4x8 --hours 2 --tunnel   # create, bootstrap (about 60 s), start, print the one-click URL
 ./ctdesk shot ID                                    # screenshot to ./screen.png and open it
 ./ctdesk act ID -- mousemove 640 400 click 1        # one xdotool action
 ./ctdesk run ID -- bash -c 'export DISPLAY=:1; setsid browser https://cathedral.computer &'
-./ctdesk url ID                                     # public noVNC URL and the VNC password
+./ctdesk url ID                                     # the one-click URL (password in the fragment) and the raw VNC password
 ./ctdesk down ID                                    # delete the room
 ```
 
@@ -39,19 +47,21 @@ Screenshots and the receipt log of a run land in `runs/<timestamp>/`.
 | Path | Role |
 |---|---|
 | `desktop/bootstrap` | apt install of the desktop stack inside a stock room, idempotent, about 60 s |
-| `desktop/desktop-up` | starts Xvfb, openbox, tint2, x11vnc, noVNC, optional tunnel; daemons outlive the exec |
+| `desktop/desktop-up` | starts Xvfb, openbox, picom, tint2, x11vnc, the branded page, optional tunnel; `--restart` reloads the look |
+| `desktop/theme/` | openbox theme, tint2 panel, picom, terminal colours, GTK dark, wallpaper renderer, launcher entries |
+| `desktop/web/index.html` | the branded noVNC page: status chip, room id, password from the URL fragment |
 | `desktop/shot` | screenshot to `/work/screen.png`; `--b64` prints it for one-call capture |
 | `desktop/browser` | Chromium with the flags that work as root under gVisor |
 | `ctdesk` | the CLI above, customer path only (`ctcli sandbox exec/download`) |
 | `agent/cathedral_computer_use.py` | computer-use loop; one receipted exec per action |
-| `Dockerfile`, `build-context.sh` | the same stack as an image, for `ctcli sandbox image-import` of a registry reference |
+| `Dockerfile`, `build-context.sh` | the same stack as an image, kept for the day image-import opens on the sealed pool |
 | `evidence/` | screenshots from live rooms |
 
 ## Sealed pool facts this relies on (6 Nov 2026)
 
-- `ctcli sandbox image-build` is closed: ENV and COPY are rejected, and a FROM+RUN-only Dockerfile
-  returns `sandbox_capacity_unavailable` (`sealed_only`). Custom images reach the pool only through
-  `image-import` of a registry reference, so the desktop installs itself at runtime instead.
+- Custom images are closed on the sealed pool today: `image-build` rejects ENV and COPY, and both a
+  FROM+RUN-only `image-build` and `image-import` of a registry reference return
+  `sandbox_capacity_unavailable` (`sealed_only`). So the desktop installs itself at runtime instead.
 - `ctcli sandbox process start` is `unsupported_on_sealed_pool`, but background children of an
   exec survive the exec. `desktop-up` starts everything with `setsid` and returns.
 - `--network internet` gives real egress (Debian mirrors, GitHub, Cloudflare). The customer default

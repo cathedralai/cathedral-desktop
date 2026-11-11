@@ -1,0 +1,132 @@
+#!/bin/bash
+# Start the virtual desktop: Xvfb :1, openbox (Cathedral theme), picom, tint2, x11vnc (localhost only),
+# the branded noVNC page on 6080 and, with --tunnel, a cloudflared quick tunnel.
+# Flags: --tunnel      public URL written to /work/desktop-url.txt (password rides in the URL fragment)
+#        --room ID     sandbox id shown on the page and written to /work/desktop.json
+#        --res WxH     screen size (default 1280x800)
+#        --restart     restart the window manager, panel, compositor, VNC and web server (keeps Xvfb, apps, tunnel)
+#        --vnc-auth none  x11vnc with no password. Only where something else is the gate: in a TEE
+#                      box the sealed stream (attested, ticketed) is, and x11vnc is localhost only.
+#                      The default, password, is what the public tunnel path needs.
+#        --foreground  stay attached (daemons otherwise outlive the exec that started them)
+# VNC password: $VNC_PASSWORD, else generated once into /work/vnc-password (0600).
+set -u
+TUNNEL=0; FG=0; RESTART=0; ROOM="${DESKTOP_ROOM:-}"; RES="${DESKTOP_RES:-1280x800}"; VNC_AUTH="${DESKTOP_VNC_AUTH:-password}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tunnel) TUNNEL=1 ;;
+    --foreground) FG=1 ;;
+    --restart) RESTART=1 ;;
+    --room) ROOM="$2"; shift ;;
+    --vnc-auth) VNC_AUTH="$2"; shift ;;
+    --res) RES="$2"; shift ;;
+  esac
+  shift
+done
+export DISPLAY=:1 XDG_CONFIG_HOME=/root/.config
+mkdir -p /work /run/desktop /root/.config/openbox /root/.config/gtk-3.0 /root/.config/xfce4/terminal
+echo starting > /run/desktop/state
+# pgrep also lists zombies, and in a sealed room pid 1 is `sleep infinity`, which never
+# reaps them: a killed openbox stays listed forever (seen live 10 Nov, state Z, ppid 1).
+# So count a process as running only when it exists and is not a zombie. Every start
+# check below uses this, or a dead process would stop its replacement from starting.
+running() {
+  for pid in $(pgrep "$@"); do
+    st="$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f1)"
+    [ -n "$st" ] && [ "$st" != Z ] && return 0
+  done
+  return 1
+}
+# A process that is still exiting must not count as running either, so --restart waits.
+desktop_procs_alive() {
+  running -x openbox || running -x tint2 || running -x picom || running -x x11vnc || running -f websockify
+}
+if [ "$RESTART" = 1 ]; then
+  pkill -x openbox; pkill -x tint2; pkill -x picom; pkill -x x11vnc; pkill -f websockify
+  for _ in $(seq 1 50); do desktop_procs_alive || break; sleep 0.1; done
+  if desktop_procs_alive; then
+    pkill -9 -x openbox; pkill -9 -x tint2; pkill -9 -x picom; pkill -9 -x x11vnc; pkill -9 -f websockify
+    for _ in $(seq 1 20); do desktop_procs_alive || break; sleep 0.1; done
+  fi
+  if desktop_procs_alive; then echo "desktop-up: old desktop processes did not exit" >&2; echo failed > /run/desktop/state; exit 1; fi
+fi
+# Right-click menu: terminal and browser (the Debian menu file is not installed).
+cat > /root/.config/openbox/menu.xml <<'MENU'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+  <menu id="root-menu" label="Cathedral">
+    <item label="Terminal"><action name="Execute"><command>xfce4-terminal</command></action></item>
+    <item label="Browser"><action name="Execute"><command>browser</command></action></item>
+    <item label="Calculator"><action name="Execute"><command>xcalc</command></action></item>
+    <separator/>
+    <item label="Reconfigure"><action name="Reconfigure"/></item>
+  </menu>
+</openbox_menu>
+MENU
+[ -f /opt/desktop/apply-openbox.py ] && python3 /opt/desktop/apply-openbox.py >/dev/null 2>&1
+[ -f /opt/desktop/gtk-settings.ini ] && cp /opt/desktop/gtk-settings.ini /root/.config/gtk-3.0/settings.ini
+[ -f /opt/desktop/terminalrc ] && cp /opt/desktop/terminalrc /root/.config/xfce4/terminal/terminalrc
+if ! xdpyinfo >/dev/null 2>&1; then
+  setsid Xvfb :1 -screen 0 "${RES}x24" -nolisten tcp -ac +extension RANDR >/run/desktop/xvfb.log 2>&1 < /dev/null &
+  for _ in $(seq 1 100); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
+fi
+if running -x openbox; then openbox --reconfigure; else setsid openbox >/run/desktop/openbox.log 2>&1 < /dev/null & sleep 0.6; fi
+if ! running -x picom && command -v picom >/dev/null; then
+  setsid picom --config /opt/desktop/picom.conf >/run/desktop/picom.log 2>&1 < /dev/null &
+fi
+if ! running -x tint2; then
+  if [ -f /opt/desktop/tint2rc ]; then setsid tint2 -c /opt/desktop/tint2rc >/run/desktop/tint2.log 2>&1 < /dev/null &
+  else setsid tint2 >/run/desktop/tint2.log 2>&1 < /dev/null & fi
+fi
+# Background after the window manager is up, otherwise openbox repaints over it.
+if [ ! -s /opt/desktop/wallpaper.png ] || [ "$RESTART" = 1 ]; then
+  [ -x /opt/desktop/wallpaper.sh ] && /opt/desktop/wallpaper.sh /opt/desktop/wallpaper.png "$RES" >/dev/null 2>&1
+fi
+xsetroot -solid '#0B0D11'
+feh --no-fehbg --bg-fill /opt/desktop/wallpaper.png >/dev/null 2>&1 || true
+PW=""
+if [ "$VNC_AUTH" = none ]; then
+  VNC_ARGS="-nopw"
+else
+  PW="${VNC_PASSWORD:-}"
+  if [ -z "$PW" ]; then
+    if [ ! -s /work/vnc-password ]; then
+      head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 12 > /work/vnc-password
+      chmod 600 /work/vnc-password
+    fi
+    PW="$(cat /work/vnc-password)"
+  fi
+  x11vnc -storepasswd "$PW" /run/desktop/vncpass >/dev/null 2>&1
+  VNC_ARGS="-rfbauth /run/desktop/vncpass"
+fi
+running -x x11vnc || setsid x11vnc -display :1 $VNC_ARGS -rfbport 5901 -localhost -forever -shared -noxdamage -quiet >/run/desktop/x11vnc.log 2>&1 < /dev/null &
+WEB=/usr/share/novnc; [ -f /opt/desktop/web/index.html ] && WEB=/opt/desktop/web
+running -f websockify || setsid websockify --web "$WEB" 6080 localhost:5901 >/run/desktop/websockify.log 2>&1 < /dev/null &
+BASE=""
+if [ "$TUNNEL" = 1 ]; then
+  if running -x cloudflared && [ -s /run/desktop/cloudflared.log ]; then
+    BASE="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /run/desktop/cloudflared.log | head -1)"
+  fi
+  if [ -z "$BASE" ]; then
+    pkill -x cloudflared 2>/dev/null; : > /run/desktop/cloudflared.log
+    setsid cloudflared tunnel --no-autoupdate --url http://localhost:6080 >/run/desktop/cloudflared.log 2>&1 < /dev/null &
+    for _ in $(seq 1 150); do
+      BASE="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /run/desktop/cloudflared.log | head -1)"
+      [ -n "$BASE" ] && break
+      sleep 0.2
+    done
+  fi
+fi
+URL=""
+if [ -n "$BASE" ]; then
+  if [ "$WEB" = /opt/desktop/web ]; then URL="${BASE}/#p=${PW}${ROOM:+&room=$ROOM}"
+  else URL="${BASE}/vnc.html?autoconnect=1&resize=scale&password=${PW}"; fi
+  printf '%s\n' "$URL" > /work/desktop-url.txt
+  printf '{"url":"%s","room":"%s","display":"%s","started_at":"%s"}\n' "$URL" "$ROOM" "$RES" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /work/desktop.json
+fi
+sleep 1
+echo ready > /run/desktop/state
+echo "desktop ready on :1 (${RES}); vnc 5901 localhost only, auth ${VNC_AUTH}; web 6080 ($WEB)"
+[ -n "$URL" ] && echo "public: $URL"
+[ "$FG" = 1 ] && wait
+exit 0

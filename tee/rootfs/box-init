@@ -1,0 +1,52 @@
+#!/bin/bash
+# /sbin/box-init: PID 1 of the measured desktop rootfs inside a TEE box. Mounts, DHCP on eth0 (per-box
+# values never ride on the measured command line), boxd on 8443 and 8444, then the Cathedral desktop
+# and Chromium with its debugging port on localhost for the CDP job. Reports on the serial console.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sys /sys 2>/dev/null
+mount -t devtmpfs dev /dev 2>/dev/null
+mkdir -p /dev/pts /dev/shm /run /tmp /work /var/log /root/.config
+mount -t devpts devpts /dev/pts 2>/dev/null
+mount -t tmpfs -o size=512m tmpfs /dev/shm 2>/dev/null
+mount -t tmpfs tmpfs /run 2>/dev/null
+mount -t tmpfs tmpfs /tmp 2>/dev/null
+mount -t configfs none /sys/kernel/config 2>/dev/null
+say() { echo "$*" > /dev/ttyS0 2>/dev/null; }
+hostname sealed-box 2>/dev/null
+ip link set lo up
+ip link set eth0 up 2>/dev/null
+# Debian's udhcpc ships its script at /etc/udhcpc/default.script. Without a
+# script udhcpc still exits 0 on a DHCPACK and configures nothing, so check the
+# address itself and fall back loudly (c48 run 1, 6 Nov: empty NET line).
+DHCP_SCRIPT=/etc/udhcpc/default.script
+[ -x "$DHCP_SCRIPT" ] || DHCP_SCRIPT=/usr/share/udhcpc/default.script
+[ -x "$DHCP_SCRIPT" ] || DHCP_SCRIPT=/sbin/box-dhcp
+busybox udhcpc -i eth0 -q -n -t 15 -T 1 -s "$DHCP_SCRIPT" >/run/dhcp.log 2>&1
+addr() { ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}'; }
+# A distro script can take the lease and still configure nothing (Debian's needs
+# ifconfig/route, which this image does not ship). Try our iproute2-only script
+# before the user-mode fallback, which is wrong on a TAP guest.
+if [ -z "$(addr)" ] && [ "$DHCP_SCRIPT" != /sbin/box-dhcp ] && [ -x /sbin/box-dhcp ]; then
+  say "NET $DHCP_SCRIPT configured nothing, retrying with /sbin/box-dhcp"
+  DHCP_SCRIPT=/sbin/box-dhcp
+  busybox udhcpc -i eth0 -q -n -t 15 -T 1 -s "$DHCP_SCRIPT" >>/run/dhcp.log 2>&1
+fi
+if [ -z "$(addr)" ]; then
+  say "NET dhcp configured nothing (script $DHCP_SCRIPT), falling back to the user-mode address"
+  ip addr add 10.0.2.15/24 dev eth0 2>/dev/null
+  ip route add default via 10.0.2.2 2>/dev/null
+fi
+A="$(addr)"; say "NET ${A:-none} via $DHCP_SCRIPT"
+[ -s /etc/boxd/ticket.pub ] || BOXD_FLAGS="${BOXD_FLAGS:-} -noticket"
+setsid boxd ${BOXD_FLAGS:-} >/run/boxd.log 2>&1 < /dev/null &
+export DISPLAY=:1
+# No VNC password here: x11vnc listens on localhost inside the box and the sealed stream
+# (attested, single-use ticket) is the gate. A password would be a second secret to carry.
+/usr/local/bin/desktop-up --res 1280x800 --vnc-auth none --room "${BOX_ROOM:-box}" >/run/desktop.log 2>&1
+setsid browser --remote-debugging-port=9222 https://cathedral.computer >/dev/null 2>&1 < /dev/null &
+say "DESKTOP ready $(cut -d' ' -f1 /proc/uptime) $(tail -1 /run/desktop.log)"
+while read -r cmd rest < /dev/ttyS0; do
+  [ "$cmd" = HALT ] && busybox poweroff -f
+done
+exec sleep infinity

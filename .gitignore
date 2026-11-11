@@ -3,3 +3,7 @@ runs/
 *.tgz
 __pycache__/
 .DS_Store
+.kds-cache/
+tee/web/core/
+tee/web/vendor/
+tee/web/fixtures/

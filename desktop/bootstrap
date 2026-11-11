@@ -1,0 +1,35 @@
+#!/bin/bash
+# One-time install of the desktop stack on a stock sealed room (Debian trixie base). Idempotent.
+# Run as root inside the room: bash /work/desktop/bootstrap
+set -eu
+export DEBIAN_FRONTEND=noninteractive
+HERE="$(cd "$(dirname "$0")" && pwd)"
+t0=$(date +%s)
+need=0
+for c in Xvfb chromium cloudflared picom xfce4-terminal x11vnc websockify; do command -v "$c" >/dev/null || need=1; done
+if [ "$need" = 1 ]; then
+  APT="apt-get -qq -o DPkg::Lock::Timeout=300"
+  $APT update
+  $APT install -y --no-install-recommends \
+    ca-certificates curl procps psmisc dbus-x11 \
+    xvfb x11-xserver-utils x11-utils x11-apps xdotool scrot imagemagick \
+    x11vnc novnc python3-websockify \
+    openbox tint2 feh picom xfce4-terminal \
+    chromium fonts-dejavu fonts-noto-color-emoji fonts-inter fonts-jetbrains-mono \
+    papirus-icon-theme adwaita-icon-theme gnome-themes-extra >/dev/null
+  curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+  $APT install -y --no-install-recommends /tmp/cloudflared.deb >/dev/null
+  apt-get clean
+  : > /tmp/cloudflared.deb
+fi
+mkdir -p /opt/desktop/web /work /usr/share/themes/Cathedral/openbox-3
+install -m 755 "$HERE/desktop-up" "$HERE/shot" "$HERE/browser" /usr/local/bin/
+install -m 644 "$HERE/theme/openbox-themerc" /usr/share/themes/Cathedral/openbox-3/themerc
+install -m 644 "$HERE/theme/tint2rc" "$HERE/theme/picom.conf" "$HERE/theme/terminalrc" "$HERE/theme/gtk-settings.ini" /opt/desktop/
+install -m 755 "$HERE/theme/apply-openbox.py" "$HERE/theme/wallpaper.sh" /opt/desktop/
+install -m 644 "$HERE/theme/cathedral-terminal.desktop" "$HERE/theme/cathedral-browser.desktop" /usr/share/applications/
+install -m 644 "$HERE/web/index.html" /opt/desktop/web/index.html
+ln -sfn /usr/share/novnc/core /opt/desktop/web/core
+ln -sfn /usr/share/novnc/vendor /opt/desktop/web/vendor
+fc-cache -f >/dev/null 2>&1 || true
+echo "bootstrap done in $(( $(date +%s) - t0 ))s: $(Xvfb -version 2>&1 | head -1 | tr -d '\n'); $(chromium --version 2>/dev/null | tr -d '\n'); $(picom --version 2>/dev/null | head -1); $(cloudflared --version 2>/dev/null | head -1)"

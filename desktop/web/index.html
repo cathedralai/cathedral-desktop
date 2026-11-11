@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Cathedral sealed desktop</title>
+<style>
+  :root { --bg: #000; --panel: #0B0D11; --line: #222831; --ink: #ECE9E1; --body: #D6D2C8; --mute: #8E9AA6; --acc: #F06E4A; --ok: #3DD68C; --bad: #FF6B7D; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--body); font: 14px/1.4 Inter, system-ui, -apple-system, sans-serif; }
+  body { display: grid; grid-template-rows: 44px 1fr; }
+  header { display: flex; align-items: center; gap: 16px; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .mark { color: var(--ink); font-weight: 600; letter-spacing: .01em; }
+  .mark span { color: var(--mute); font-weight: 400; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; font: 12px/1 "JetBrains Mono", ui-monospace, monospace; color: var(--mute); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mute); }
+  .on .dot { background: var(--ok); } .off .dot { background: var(--bad); } .wait .dot { background: var(--acc); }
+  .room { margin-left: auto; font: 12px/1 "JetBrains Mono", ui-monospace, monospace; color: var(--mute); }
+  .room b { color: var(--body); font-weight: 500; }
+  a { color: var(--acc); text-decoration: none; } a:hover { text-decoration: underline; }
+  main { position: relative; min-height: 0; }
+  #screen { position: absolute; inset: 0; }
+  #screen canvas { outline: none; }
+  .note { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px 24px; width: min(420px, 90vw); color: var(--body); box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  .note h2 { margin: 0 0 6px; font-size: 16px; color: var(--ink); font-weight: 600; }
+  .note p { margin: 0 0 12px; color: var(--mute); font-size: 13px; }
+  .note form { display: flex; gap: 8px; }
+  .note input { flex: 1; background: #000; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); padding: 8px 10px; font: 13px "JetBrains Mono", monospace; }
+  .note input:focus { outline: 2px solid var(--acc); outline-offset: 1px; }
+  .note button { background: var(--acc); color: #0B0D11; border: 0; border-radius: 6px; padding: 8px 14px; font-weight: 600; cursor: pointer; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="mark">Cathedral <span>sealed desktop</span></div>
+  <div id="status" class="chip wait"><i class="dot"></i><span id="status-text">connecting</span></div>
+  <div class="room" id="room" hidden>room <b id="room-id"></b></div>
+  <a id="receipts" href="https://cathedral.computer/receipts" target="_blank" rel="noopener">receipts</a>
+</header>
+<main>
+  <div id="screen"></div>
+  <div id="ask" class="note" hidden>
+    <h2>Desktop password</h2>
+    <p>This link has no key in it. Paste the room's VNC password (ctdesk url ID).</p>
+    <form id="ask-form"><input id="ask-pw" type="password" autocomplete="off" autofocus><button type="submit">Connect</button></form>
+  </div>
+  <div id="gone" class="note" hidden>
+    <h2>Disconnected</h2>
+    <p id="gone-why">The room closed the connection.</p>
+    <form onsubmit="location.reload(); return false;"><button type="submit">Reconnect</button></form>
+  </div>
+</main>
+<script type="module">
+  import RFB from './core/rfb.js';
+  // The password travels in the URL fragment: browsers never send it to the server or the tunnel.
+  const frag = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const room = frag.get('room') || '';
+  // No password in the link: pass no credentials, so noVNC raises
+  // credentialsrequired and the ask form appears (an empty string would be
+  // sent as an empty VNC password and refused).
+  let password = frag.get('p') || undefined;
+  if (room) { document.getElementById('room-id').textContent = room.slice(0, 8); document.getElementById('room').hidden = false; }
+  const status = document.getElementById('status'), text = document.getElementById('status-text');
+  const set = (cls, msg) => { status.className = 'chip ' + cls; text.textContent = msg; };
+  const ask = document.getElementById('ask'), gone = document.getElementById('gone');
+  const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/websockify';
+  let rfb;
+  function connect() {
+    rfb = new RFB(document.getElementById('screen'), url, password ? { credentials: { password } } : {});
+    rfb.scaleViewport = true;
+    rfb.resizeSession = false;
+    rfb.background = '#000';
+    rfb.addEventListener('connect', () => { set('on', 'live'); ask.hidden = true; gone.hidden = true; rfb.focus(); });
+    rfb.addEventListener('credentialsrequired', () => { set('wait', 'password'); ask.hidden = false; document.getElementById('ask-pw').focus(); });
+    rfb.addEventListener('securityfailure', (e) => { set('off', 'refused'); document.getElementById('gone-why').textContent = 'The room refused the password.' + (e.detail?.reason ? ' ' + e.detail.reason : ''); gone.hidden = false; });
+    rfb.addEventListener('disconnect', (e) => { set('off', 'offline'); if (ask.hidden) { document.getElementById('gone-why').textContent = e.detail?.clean ? 'The room closed the connection.' : 'The connection dropped.'; gone.hidden = false; } });
+  }
+  document.getElementById('ask-form').addEventListener('submit', (ev) => { ev.preventDefault(); password = document.getElementById('ask-pw').value; ask.hidden = true; rfb.sendCredentials({ password }); });
+  connect();
+</script>
+</body>
+</html>
