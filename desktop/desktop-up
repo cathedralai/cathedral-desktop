@@ -119,8 +119,10 @@ if [ "$TUNNEL" = 1 ]; then
 fi
 URL=""
 if [ -n "$BASE" ]; then
+  # The password rides in the fragment on both pages, so it never reaches the tunnel or the server.
+  # Stock vnc.html (noVNC 1.6.0 in trixie) reads its settings from the fragment before the query.
   if [ "$WEB" = /opt/desktop/web ]; then URL="${BASE}/#p=${PW}${ROOM:+&room=$ROOM}"
-  else URL="${BASE}/vnc.html?autoconnect=1&resize=scale&password=${PW}"; fi
+  else URL="${BASE}/vnc.html#autoconnect=1&resize=scale&password=${PW}"; fi
   printf '%s\n' "$URL" > /work/desktop-url.txt
   printf '{"url":"%s","room":"%s","display":"%s","started_at":"%s"}\n' "$URL" "$ROOM" "$RES" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /work/desktop.json
 fi

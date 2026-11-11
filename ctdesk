@@ -1,40 +1,200 @@
 #!/bin/bash
 # ctdesk: a Cathedral sealed desktop from the command line (customer path only: ctcli exec/download).
 #   ctdesk new [--size sealed-4x8] [--hours 2] [--tunnel]   create a room, bootstrap, start the desktop
+#       [--image NAME@sha256:DIGEST]                         boot the prebuilt image instead: no bootstrap (env CTDESK_IMAGE)
+#       [--max-spend-usd X] [--dry-run]                      spend cap (default: the rate for the lifetime); print the create and stop
 #   ctdesk up ID [--tunnel]                                  (re)start the desktop in an existing room
 #   ctdesk url ID                                            print the public noVNC URL and the VNC password
 #   ctdesk shot ID [out.png]                                 screenshot to a file (default ./screen.png) and open it
 #   ctdesk act ID -- <xdotool args>                          one input action, e.g. act ID -- mousemove 100 200 click 1
 #   ctdesk run ID -- <command>                               run any command in the room
 #   ctdesk down ID                                           delete the room
-# Honours CTCLI_CONFIG for the ctcli login to use.
+# Honours CTCLI_CONFIG for the ctcli login to use; --image reads the same login (and CTCLI_API_KEY/CTCLI_API_BASE).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { echo "ctdesk: $*" >&2; exit 1; }
 command -v ctcli >/dev/null || die "ctcli not found"
 payload() { tar czf - -C "$HERE" desktop | base64 | tr -d '\n'; }
+# Create a sealed room from a registry image named by digest, then wait until it runs. ctcli 0.5.21's
+# --image takes catalog names only, so this posts the create itself. The API key is read here from the
+# ctcli login: never printed, never in argv. Prints the room id on stdout; "dry" prints the request instead.
+image_create() {
+  python3 -I - "$@" <<'PY'
+import json, os, re, sys, time, urllib.error, urllib.request
+from decimal import ROUND_CEILING, Decimal
+
+image, size, life, spend, rid, mode = sys.argv[1:7]
+life = int(life)
+UA = "ctdesk/1 (cathedral-desktop)"
+
+
+def say(msg):
+    print(f"ctdesk: {msg}", file=sys.stderr, flush=True)
+
+
+if not re.fullmatch(r"[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}", image):
+    say(f"--image must be NAME@sha256:<64 hex> (a tag can move; the room must boot what was reviewed), got {image!r}")
+    sys.exit(2)
+path = os.path.expanduser(os.environ.get("CTCLI_CONFIG", "~/.config/cathedral/ctcli.json"))
+try:
+    with open(path) as f:
+        auth = json.load(f).get("auth") or {}
+except FileNotFoundError:
+    auth = {}
+key = os.environ.get("CTCLI_API_KEY") or auth.get("api_key")
+base = (os.environ.get("CTCLI_API_BASE") or auth.get("api_base") or "https://cathedral.computer").rstrip("/")
+if base in ("https://cathedral.computer/api/workers", "https://www.cathedral.computer/api/workers"):
+    base = base[: -len("/api/workers")]  # the former trial prefix, migrated as ctcli does
+body = {
+    "required_hardware": "amd_sev_snp",
+    "template": size,
+    "image": image,
+    "network": "internet",
+    "lifetime_seconds": life,
+    "max_spend_usd": spend or "<rate x lifetime from GET /v1/sandboxes/catalog>",
+    "labels": {"owner": "ctdesk", "purpose": "desktop"},
+}
+if mode == "dry":
+    source = "CTCLI_API_KEY" if os.environ.get("CTCLI_API_KEY") else path
+    print(f"POST {base}/v1/sandboxes")
+    print(f"Authorization: Bearer <{'key from ' + source + ', not shown' if key else 'no key found: run ctcli login'}>")
+    print("Content-Type: application/json")
+    print(f"Idempotency-Key: {rid}")
+    print(f"User-Agent: {UA}")
+    print()
+    print(json.dumps(body, indent=2))
+    print()
+    print(f"then: GET {base}/v1/sandboxes/<id> until running; ctcli sandbox exec <id> -- desktop-up --room <id>")
+    sys.exit(0)
+if not key:
+    say(f"no API key in {path} or CTCLI_API_KEY; run ctcli login")
+    sys.exit(1)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    # urllib would resend the Authorization header to wherever a redirect points.
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+opener = urllib.request.build_opener(NoRedirect)
+
+
+def call(method, route, payload=None, idempotency_key=None):
+    headers = {"Accept": "application/json", "User-Agent": UA, "Authorization": f"Bearer {key}"}
+    data = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload).encode()
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    request = urllib.request.Request(base + route, data=data, method=method, headers=headers)
+    with opener.open(request, timeout=120) as response:
+        return json.load(response)
+
+
+def refused(err, what):
+    say(f"{what}: HTTP {err.code}: {err.read(800).decode('utf-8', 'replace')}")
+    sys.exit(1)
+
+
+try:
+    if not spend:
+        catalog = call("GET", "/v1/sandboxes/catalog")
+        sealed = catalog.get("sealed") or {}
+        sizes = sealed.get("sizes") or [sealed]
+        rate = next((s.get("hourly_rate_usd", sealed.get("hourly_rate_usd")) for s in sizes
+                     if s.get("template") == size), None)
+        if rate is None:
+            say(f"{size} is not a sealed size in the catalog")
+            sys.exit(1)
+        spend = str((Decimal(str(rate)) * life / Decimal(3600)).quantize(Decimal("0.000001"), rounding=ROUND_CEILING))
+        body["max_spend_usd"] = spend
+except urllib.error.HTTPError as err:
+    refused(err, "catalog")
+except (urllib.error.URLError, OSError) as err:
+    say(f"catalog unreachable ({err}); nothing was created")
+    sys.exit(1)
+# A lost answer is asked once more with the same key and body, which the API resolves to the same create.
+for attempt in (1, 2):
+    try:
+        view = call("POST", "/v1/sandboxes", body, idempotency_key=rid)
+        break
+    except urllib.error.HTTPError as err:
+        if err.code not in (502, 504) or attempt == 2:
+            refused(err, f"create (Idempotency-Key {rid})")
+        say(f"create got HTTP {err.code}; asking again with the same Idempotency-Key")
+    except (urllib.error.URLError, OSError) as err:
+        if attempt == 2:
+            say(f"create outcome unknown ({err}); Idempotency-Key {rid}. Check `ctcli sandbox list` before creating again")
+            sys.exit(1)
+        say(f"create got no answer ({err}); asking again with the same Idempotency-Key")
+sid = str(view.get("id") or "")
+if not re.fullmatch(r"[0-9a-f-]{36}", sid):
+    say(f"create returned no sandbox id: {json.dumps(view)[:800]}")
+    sys.exit(1)
+say(f"room {sid} accepted ({view.get('state')}); waiting for it to run")
+deadline = time.monotonic() + 900
+while view.get("state") != "running":
+    if view.get("state") in ("failed", "deleting", "deleted") or time.monotonic() > deadline:
+        say(f"room {sid} is {view.get('state')}: {json.dumps(view)[:800]}. Delete it with: ctdesk down {sid}")
+        sys.exit(1)
+    pause = view.get("retry_after_s")
+    time.sleep(min(max(pause, 1), 10) if isinstance(pause, int) else 2)
+    try:
+        view = call("GET", f"/v1/sandboxes/{sid}")
+    except urllib.error.HTTPError as err:
+        if err.code < 500:
+            refused(err, f"status of room {sid} (delete it with: ctdesk down {sid})")
+        say(f"status read got HTTP {err.code}; asking again")
+    except (urllib.error.URLError, OSError) as err:
+        say(f"status read failed ({err}); asking again")
+print(sid)
+PY
+}
 cmd="${1:-}"; shift || true
 case "$cmd" in
   new)
-    size=sealed-4x8; hours=2; tunnel=""
+    size=sealed-4x8; hours=2; tunnel=""; image="${CTDESK_IMAGE:-}"; spend=""; dry=0
     while [ $# -gt 0 ]; do
       case "$1" in
         --size) size="$2"; shift ;;
         --hours) hours="$2"; shift ;;
         --tunnel) tunnel="--tunnel" ;;
+        --image) image="$2"; shift ;;
+        --max-spend-usd) spend="$2"; shift ;;
+        --dry-run) dry=1 ;;
         *) die "unknown flag $1" ;;
       esac
       shift
     done
     life=$(( hours * 3600 ))
-    out="$(ctcli --json sandbox create --template "$size" --network internet --lifetime "$life" --wait \
-            --label owner=ctdesk --label purpose=desktop --request-id "ctdesk-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM")"
-    id="$(printf '%s' "$out" | python3 -c 'import sys,re; s=sys.stdin.read(); m=re.search(r"\"(?:sandbox_)?id\"\s*:\s*\"([0-9a-f-]{36})\"", s); print(m.group(1) if m else "")')"
-    [ -n "$id" ] || { echo "$out" >&2; die "create failed"; }
-    echo "room $id ($size, ${hours}h, internet)"
-    echo "bootstrapping (2-5 min)..."
-    ctcli sandbox exec "$id" --timeout 900 -- bash -c "mkdir -p /work && echo $(payload) | base64 -d | tar xzf - -C /work && bash /work/desktop/bootstrap"
+    rid="ctdesk-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
+    t0=$(date +%s)
+    if [ -n "$image" ]; then
+      [ "$dry" = 1 ] && { image_create "$image" "$size" "$life" "$spend" "$rid" dry; exit; }
+      id="$(image_create "$image" "$size" "$life" "$spend" "$rid" live)" || exit 1
+    else
+      create=(ctcli --json sandbox create --template "$size" --network internet --lifetime "$life" --wait
+              --label owner=ctdesk --label purpose=desktop --request-id "$rid")
+      [ -n "$spend" ] && create+=(--max-spend-usd "$spend")
+      [ "$dry" = 1 ] && { printf '%q ' "${create[@]}"; echo; exit 0; }
+      out="$("${create[@]}")"
+      id="$(printf '%s' "$out" | python3 -c 'import sys,re; s=sys.stdin.read(); m=re.search(r"\"(?:sandbox_)?id\"\s*:\s*\"([0-9a-f-]{36})\"", s); print(m.group(1) if m else "")')"
+      [ -n "$id" ] || { echo "$out" >&2; die "create failed"; }
+    fi
+    t_created=$(date +%s)
+    echo "room $id ($size, ${hours}h, internet${image:+, image $image}): created in $(( t_created - t0 ))s"
+    boot=""
+    if [ -z "$image" ]; then
+      echo "bootstrapping (2-5 min)..."
+      ctcli sandbox exec "$id" --timeout 900 -- bash -c "mkdir -p /work && echo $(payload) | base64 -d | tar xzf - -C /work && bash /work/desktop/bootstrap"
+      boot=", bootstrap $(( $(date +%s) - t_created ))s"
+    fi
+    t_start=$(date +%s)
     ctcli sandbox exec "$id" --timeout 60 -- desktop-up --room "$id" $tunnel
+    t_ready=$(date +%s)
+    echo "desktop ready in $(( t_ready - t0 ))s (create $(( t_created - t0 ))s${boot}, start $(( t_ready - t_start ))s)"
     [ -n "$tunnel" ] && "$0" url "$id"
     echo "next: $0 shot $id   |   $0 act $id -- mousemove 640 400 click 1   |   $0 down $id"
     ;;
@@ -50,5 +210,5 @@ case "$cmd" in
   run)  id="${1:?ID}"; shift; [ "${1:-}" = "--" ] && shift
         ctcli sandbox exec "$id" --timeout 120 -- "$@" ;;
   down) id="${1:?ID}"; ctcli sandbox delete "$id" --yes ;;
-  *) sed -n '2,10p' "$0"; exit 1 ;;
+  *) sed -n '2,12p' "$0"; exit 1 ;;
 esac

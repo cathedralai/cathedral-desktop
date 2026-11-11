@@ -17,7 +17,16 @@ if [ "$need" = 1 ]; then
     openbox tint2 feh picom xfce4-terminal \
     chromium fonts-dejavu fonts-noto-color-emoji fonts-inter fonts-jetbrains-mono \
     papirus-icon-theme adwaita-icon-theme gnome-themes-extra >/dev/null
-  curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+  # The image build (Dockerfile) pins CLOUDFLARED_VERSION and CLOUDFLARED_SHA256; a room bootstrap takes the latest.
+  if [ -n "${CLOUDFLARED_VERSION:-}" ]; then
+    cf_url="https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64.deb"
+  else
+    cf_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb"
+  fi
+  curl -fsSL -o /tmp/cloudflared.deb "$cf_url"
+  if [ -n "${CLOUDFLARED_SHA256:-}" ]; then
+    echo "${CLOUDFLARED_SHA256}  /tmp/cloudflared.deb" | sha256sum -c - >/dev/null
+  fi
   $APT install -y --no-install-recommends /tmp/cloudflared.deb >/dev/null
   apt-get clean
   : > /tmp/cloudflared.deb
