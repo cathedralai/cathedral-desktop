@@ -40,7 +40,7 @@ SCROLL_BUTTONS = {"up": 4, "down": 5, "left": 6, "right": 7}
 
 
 class Room:
-    """A sealed sandbox reached only through ctcli."""
+    """A sealed sandbox reached only through ctcli; log exec request IDs for later receipt checks."""
 
     def __init__(self, sandbox_id: str):
         self.id = sandbox_id
@@ -53,6 +53,8 @@ class Room:
         self.receipts.append({"request_id": m.group(1) if m else None, "argv": [str(a) for a in argv], "rc": p.returncode})
         if p.returncode != 0:
             raise RuntimeError(f"exec rc={p.returncode}: {p.stderr.strip()[-300:]}")
+        if not m:
+            raise RuntimeError("ctcli returned success without an exec request id")
         return p.stdout
 
     def xdo(self, *args) -> str:
@@ -196,8 +198,8 @@ def main() -> int:
                     content = [image_block(snap())] if r == "image" else [{"type": "text", "text": r}]
                     results.append({**base, "content": content})
                     new_receipts = room.receipts[prior_receipts:]
-                    receipt_ids = [entry["request_id"] for entry in new_receipts]
-                    print(f"[turn {turn}] {tu.name} {json.dumps(inp)}  receipts {receipt_ids}")
+                    request_ids = [entry["request_id"] for entry in new_receipts]
+                    print(f"[turn {turn}] {tu.name} {json.dumps(inp)}  exec requests {request_ids}")
                     write_log()
                 except Exception as e:  # report to the model, stop the batch
                     failed = True
@@ -212,7 +214,7 @@ def main() -> int:
         raise
     finally:
         write_log(complete=succeeded)
-    print(f"{outcome}; {len(room.receipts)} receipted execs, {shots} screenshots in {run_dir}")
+    print(f"{outcome}; {len(room.receipts)} exec requests, {shots} screenshots in {run_dir}")
     return 0 if succeeded else 1
 
 

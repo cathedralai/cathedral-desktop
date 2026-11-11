@@ -109,5 +109,29 @@ class AgentLoopStatusTests(unittest.TestCase):
         self.assertIn("missing API key", log["outcome"])
 
 
+class ExecRequestLogTests(unittest.TestCase):
+    def setUp(self):
+        fake_anthropic = types.ModuleType("anthropic")
+        with patch.dict(sys.modules, {"anthropic": fake_anthropic}):
+            spec = importlib.util.spec_from_file_location("cathedral_computer_use_exec_test", SCRIPT)
+            self.agent = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(self.agent)
+
+    def test_success_requires_ctcli_request_id(self):
+        room = self.agent.Room("test-room")
+        response = types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+        with patch.object(self.agent.subprocess, "run", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "without an exec request id"):
+                room.exec(["true"])
+        self.assertIsNone(room.receipts[0]["request_id"])
+
+    def test_logs_request_id_without_calling_it_a_receipt(self):
+        room = self.agent.Room("test-room")
+        response = types.SimpleNamespace(returncode=0, stdout="ok", stderr="ctcli: exec request id: exec-123\n")
+        with patch.object(self.agent.subprocess, "run", return_value=response):
+            self.assertEqual(room.exec(["true"]), "ok")
+        self.assertEqual(room.receipts[0]["request_id"], "exec-123")
+
+
 if __name__ == "__main__":
     unittest.main()
