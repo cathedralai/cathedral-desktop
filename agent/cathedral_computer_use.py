@@ -9,7 +9,7 @@ Usage:
   cathedral_computer_use.py --sandbox ID --task "Open a terminal and run uname -a" [--max-turns 40]
                             [--launch "browser https://cathedral.computer"] [--out runs]
 Env:
-  ANTHROPIC_API_KEY  Claude API key (or an `ant auth login` profile)
+  ANTHROPIC_API_KEY  Claude API key read by the Anthropic Python SDK
   CTCLI_CONFIG       optional ctcli login file for the room
 """
 from __future__ import annotations
@@ -131,7 +131,6 @@ def main() -> int:
     ap.add_argument("--model", default=MODEL)
     args = ap.parse_args()
 
-    client = anthropic.Anthropic()
     room = Room(args.sandbox)
     run_dir = Path(args.out) / dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -145,6 +144,7 @@ def main() -> int:
         return b64
 
     outcome = "max turns reached"
+    succeeded = False
 
     def write_log(complete: bool = False) -> None:
         # Written after every receipted action and once more at the end, so a run
@@ -154,6 +154,7 @@ def main() -> int:
              "execs": room.receipts}, indent=2))
 
     try:
+        client = anthropic.Anthropic()
         for launch in args.launch:
             room.exec(["bash", "-c", f"export DISPLAY=:1; setsid {launch} >/dev/null 2>&1 < /dev/null &"])
             time.sleep(3)
@@ -179,7 +180,8 @@ def main() -> int:
                 break
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             if resp.stop_reason != "tool_use" or not tool_uses:
-                outcome = f"done ({resp.stop_reason})"
+                succeeded = resp.stop_reason == "end_turn" and not tool_uses
+                outcome = f"done ({resp.stop_reason})" if succeeded else f"incomplete ({resp.stop_reason})"
                 break
             results, failed = [], False
             for tu in tool_uses:
@@ -189,11 +191,13 @@ def main() -> int:
                     continue
                 inp = dict(tu.input or {})
                 try:
+                    prior_receipts = len(room.receipts)
                     r = do_action(room, tu.name, inp)
                     content = [image_block(snap())] if r == "image" else [{"type": "text", "text": r}]
                     results.append({**base, "content": content})
-                    rid = room.receipts[-1]["request_id"]
-                    print(f"[turn {turn}] {tu.name} {json.dumps(inp)}  receipt {rid}")
+                    new_receipts = room.receipts[prior_receipts:]
+                    receipt_ids = [entry["request_id"] for entry in new_receipts]
+                    print(f"[turn {turn}] {tu.name} {json.dumps(inp)}  receipts {receipt_ids}")
                     write_log()
                 except Exception as e:  # report to the model, stop the batch
                     failed = True
@@ -207,9 +211,9 @@ def main() -> int:
         outcome = f"error: {type(exc).__name__}: {exc}"[:300]
         raise
     finally:
-        write_log(complete=True)
+        write_log(complete=succeeded)
     print(f"{outcome}; {len(room.receipts)} receipted execs, {shots} screenshots in {run_dir}")
-    return 0
+    return 0 if succeeded else 1
 
 
 if __name__ == "__main__":
