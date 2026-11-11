@@ -16,25 +16,41 @@ fixed salt and no superblock, verifies it, and writes `desktop.dm-create`.
 
 ## Reproducible
 
-Same source tree + same `SNAPSHOT` = same `desktop.squashfs` and root hash, on any host. That is
-what lets anyone recompute the AB#363 measurement instead of trusting ours.
+Same inputs = same `desktop.squashfs` and root hash. That is what lets anyone recompute the AB#363
+measurement instead of trusting ours. The inputs are the source tree, `SNAPSHOT`, `TICKET_PUB` (the
+32-byte Ed25519 ticket public key; default `tee/fixtures/ticket.pub`) and `VERITY_SALT`. All four
+are written into `desktop.manifest`, so a published manifest says exactly what to pass.
+
+Shown so far: one host (c48, Ubuntu, AMD EPYC), five builds over four days, 32 and 4 CPUs, all
+byte-identical. A build on a second host (another distro, filesystem and CPU vendor) is still open.
 
 - Every package comes from one snapshot.debian.org timestamp (`SNAPSHOT`, default in the script),
   and `SOURCE_DATE_EPOCH` is that timestamp.
 - The build tools come from the same snapshot: the script bootstraps mmdebstrap (two debs pinned
-  by sha256), makes a trixie builder chroot, and runs the image build inside it. The host only needs
-  perl, apt, dpkg-deb, curl and unshare (Debian or Ubuntu). The host's own mksquashfs or Go never
+  by sha256), makes a trixie builder chroot, and runs the image build inside it, in private mount and
+  UTS namespaces. The host only needs perl, apt (with gpgv), dpkg-deb, curl, ca-certificates,
+  unshare, chroot, mount, sha256sum and GNU date, on amd64. The host's own mksquashfs or Go never
   touch the image.
 - boxd builds with `-trimpath -buildvcs=false -buildid=` and `GOTOOLCHAIN=local`.
 - Before mksquashfs the script normalises what a build leaves behind: `/etc/hostname`
   (`sealed-box`), `/etc/resolv.conf`, machine-id, logs (truncated), apt lists and caches, ldconfig
   aux-cache, `__pycache__`, the wallpaper's PNG date chunks. Every mtime goes to 0 before `fc-cache`,
   matching what the squashfs stores, so the font caches are identical and still valid at boot.
-- `desktop.manifest` starts with the snapshot, `SOURCE_DATE_EPOCH`, the builder tool versions and
-  the boxd sha256, then every package and version in the image.
+  `/dev` ships empty: its contents depend on whether the build host can mknod, and the initrd moves
+  devtmpfs over it at boot.
+- The build fails without a 32-byte ticket key, so it can never produce a box that runs `-noticket`.
+- `desktop.manifest` starts with the source commit, the snapshot, `SOURCE_DATE_EPOCH`, the builder
+  tool versions, the boxd sha256, the ticket.pub sha256 and the verity salt, then every package and
+  version in the image. `desktop.files` lists the sha256 of every file in the image.
 
-To check a published root hash: check out the commit, run the script with a fresh `WORK`, compare
-`desktop.roothash`. A new `SNAPSHOT` (for package updates) gives a new hash on purpose.
+To check a published root hash: check out the commit in the manifest, run the script with a fresh
+`WORK` and the manifest's `TICKET_PUB` and salt, and compare `desktop.roothash`. If it differs,
+`diff` the two `desktop.files` to find the file that moved. A new `SNAPSHOT` (for package updates)
+gives a new hash on purpose.
+
+Known limit: apt still checks signing-key expiry against the verifier's clock. Once the Debian
+archive keys of this snapshot expire, the build stops with EXPKEYSIG instead of producing a
+different image. Move `SNAPSHOT` forward (a new hash) before then.
 
 ## Boot (for the kit on c48)
 
