@@ -42,6 +42,28 @@ uv venv .venv && uv pip install --python .venv/bin/python anthropic
 
 Screenshots and the receipt log of a run land in `runs/<timestamp>/`.
 
+## Prebuilt image
+
+`ctdesk new` spends most of its time in `desktop/bootstrap` (about 117 s of 150 s). The prebuilt image is
+that bootstrap run at build time, so a room starts with nothing to install.
+
+- Publish: run the `publish-image` workflow by hand (Actions, workflow_dispatch). It pushes
+  `ghcr.io/cathedralai/cathedral-desktop:<git sha>` for linux/amd64 and prints the digest in the job summary.
+- Make it public: the sealed pool pulls public images only. GHCR creates the package private; changing its
+  visibility is a manual step in the package settings, and the workflow never does it.
+- Use: name the image by digest, never by tag.
+
+```sh
+./ctdesk new --image ghcr.io/cathedralai/cathedral-desktop@sha256:<digest> --tunnel   # or CTDESK_IMAGE=...
+./ctdesk new --image ghcr.io/cathedralai/cathedral-desktop@sha256:<digest> --dry-run  # print the create, send nothing
+```
+
+With `--image`, ctdesk skips the upload and bootstrap and execs `desktop-up` straight away; without it,
+nothing changes. ctcli's `--image` takes catalog names only, so ctdesk posts this create to
+`/v1/sandboxes` itself with the ctcli login's key (`$CTCLI_CONFIG`; the key is never printed). Both paths
+print seconds for the create and until the desktop is ready. The VNC password is still generated per room
+at start; the image has none.
+
 ## Layout
 
 | Path | Role |
@@ -54,7 +76,8 @@ Screenshots and the receipt log of a run land in `runs/<timestamp>/`.
 | `desktop/browser` | Chromium with the flags that work as root under gVisor |
 | `ctdesk` | the CLI above, customer path only (`ctcli sandbox exec/download`) |
 | `agent/cathedral_computer_use.py` | computer-use loop; one receipted exec per action |
-| `Dockerfile`, `build-context.sh` | the same stack as an image, kept for the day image-import opens on the sealed pool |
+| `Dockerfile` | the prebuilt image: runs `desktop/bootstrap` at build, base image and cloudflared pinned |
+| `.github/workflows/publish-image.yml` | builds and pushes the image to GHCR, by hand only |
 | `evidence/` | screenshots from live rooms |
 
 ## Sealed pool facts this relies on (6 Nov 2026)
@@ -62,6 +85,7 @@ Screenshots and the receipt log of a run land in `runs/<timestamp>/`.
 - Custom images are closed on the sealed pool today: `image-build` rejects ENV and COPY, and both a
   FROM+RUN-only `image-build` and `image-import` of a registry reference return
   `sandbox_capacity_unavailable` (`sealed_only`). So the desktop installs itself at runtime instead.
+  The prebuilt image takes a different path: a create that names a public registry digest in `image`.
 - `ctcli sandbox process start` is `unsupported_on_sealed_pool`, but background children of an
   exec survive the exec. `desktop-up` starts everything with `setsid` and returns.
 - `--network internet` gives real egress (Debian mirrors, GitHub, Cloudflare). The customer default

@@ -1,0 +1,51 @@
+# Build the prebuilt desktop image and push it to GHCR, by hand only.
+# The package stays as GHCR creates it (private for this repo). Making it public, which the sealed pool
+# needs to pull it, is a separate human decision in the package settings, not part of this workflow.
+name: publish-image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-image
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      IMAGE: ghcr.io/cathedralai/cathedral-desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      # One plain linux/amd64 manifest (no provenance or SBOM index), so the digest is the image itself.
+      - name: Build and push linux/amd64
+        run: |
+          docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+            --tag "$IMAGE:$GITHUB_SHA" --push .
+
+      # Read the digest back from the registry: it is what the sealed pool will pull.
+      - name: Digest to job summary
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "$IMAGE:$GITHUB_SHA" --format '{{json .Manifest}}' | jq -r .digest)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest for $IMAGE:$GITHUB_SHA" >&2; exit 1; }
+          {
+            echo "### cathedral-desktop image"
+            echo
+            echo "- tag: \`$IMAGE:$GITHUB_SHA\`"
+            echo "- digest: \`$digest\`"
+            echo "- use: \`./ctdesk new --image $IMAGE@$digest --tunnel\`"
+            echo "- the sealed pool pulls only public images; visibility is set by hand in the package settings"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$IMAGE@$digest"
