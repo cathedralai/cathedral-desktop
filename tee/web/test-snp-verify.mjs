@@ -49,6 +49,27 @@ if (existsSync(join(fx, 'report.bin')) && existsSync(join(fx, 'vcek.der'))) {
     const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowedMeasurements: [], allowAnyMeasurement: true });
     check('real report: VCEK chain, signature, REPORT_DATA binding', r.ok, `measurement ${r.measurement.slice(0, 16)} testMode=${r.testMode}`);
   } catch (e) { check('real report', false, e.message); }
+  // The chip certificate names its firmware in four AMD extensions (12, 0, 28, 88 for the saved chip);
+  // they must equal the report's own numbers at 0x180, 0x181, 0x186, 0x187, and that check runs before the
+  // report's signature, so a changed byte is named as a firmware mismatch.
+  for (const [off, part] of [[0x180, 'bl'], [0x181, 'tee'], [0x186, 'snp'], [0x187, 'ucode']]) {
+    try {
+      const bad = report.slice(); bad[off] ^= 0x01;
+      await verifySnp({ report: bad, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true }); check(`firmware byte ${part} changed: refused`, false, 'accepted');
+    } catch (e) { check(`firmware byte ${part} changed: refused`, /firmware/i.test(e.message) && e.message.includes(part), e.message); }
+  }
+  // minTcb is a floor on the reported numbers, checked after the signature; parts left out are not checked.
+  const tcb = { bl: report[0x180], tee: report[0x181], snp: report[0x186], ucode: report[0x187] };
+  try {
+    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true, minTcb: tcb });
+    check('floor equal to the reported firmware: accepted', r.ok, JSON.stringify(tcb));
+  } catch (e) { check('floor equal to the reported firmware', false, e.message); }
+  for (const part of ['bl', 'tee', 'snp', 'ucode']) {
+    try {
+      await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true, minTcb: { [part]: tcb[part] + 1 } });
+      check(`floor one above the reported ${part}: refused`, false, 'accepted');
+    } catch (e) { check(`floor one above the reported ${part}: refused`, /below the floor/i.test(e.message) && e.message.includes(part), e.message); }
+  }
   // No fingerprint list is a refusal unless the caller says, in words, that any build will do.
   for (const [label, extra] of [['no list', {}], ['empty list', { allowedMeasurements: [] }], ['allowAnyMeasurement false', { allowAnyMeasurement: false }]]) {
     try {

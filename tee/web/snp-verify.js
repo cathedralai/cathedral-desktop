@@ -51,6 +51,37 @@ function seq(b, node) {
 
 const slice = (b, node, withHeader = true) => b.slice(withHeader ? node.hdr : node.start, node.end);
 
+function oidString(b, node) {
+  const arc = [];
+  let v = 0;
+  for (let p = node.start; p < node.end; p++) {
+    v = v * 128 + (b[p] & 0x7f);
+    if (!(b[p] & 0x80)) { arc.push(v); v = 0; }
+  }
+  const first = arc.shift();
+  return [Math.min(Math.floor(first / 40), 2), first - 40 * Math.min(Math.floor(first / 40), 2), ...arc].join('.');
+}
+
+// AMD's chip certificate carries the firmware numbers it was issued for in these extensions
+// (the part names are the ones the KDS URL uses): each value is an OCTET STRING holding a DER INTEGER.
+const AMD_TCB_OIDS = { '1.3.6.1.4.1.3704.1.3.1': 'bl', '1.3.6.1.4.1.3704.1.3.2': 'tee', '1.3.6.1.4.1.3704.1.3.3': 'snp', '1.3.6.1.4.1.3704.1.3.8': 'ucode' };
+
+function amdTcbExtensions(b, fields) {
+  const out = {};
+  const wrapper = fields.find((f) => f.tag === 0xa3); // [3] EXPLICIT extensions
+  if (!wrapper) return out;
+  for (const ext of seq(b, seq(b, wrapper)[0])) {
+    const [oid, ...rest] = seq(b, ext);
+    const part = AMD_TCB_OIDS[oidString(b, oid)];
+    if (!part) continue;
+    const value = rest[rest.length - 1]; // the OCTET STRING; a critical flag, when present, sits before it
+    const num = tlv(b, value.start);
+    if (num.tag !== 0x02 || num.end - num.start < 1 || num.end - num.start > 2) throw new Error('DER: unexpected firmware number');
+    out[part] = num.end - num.start === 1 ? b[num.start] : b[num.start] * 256 + b[num.start + 1];
+  }
+  return out;
+}
+
 /** Split a DER certificate into the parts verification needs. */
 export function parseCert(der) {
   const b = der instanceof Uint8Array ? der : new Uint8Array(der);
@@ -66,6 +97,7 @@ export function parseCert(der) {
     subject: slice(b, fields[i + 4]),
     spki: slice(b, fields[i + 5]),
     signature: b.slice(sigVal.start + 1, sigVal.end), // BIT STRING: skip the unused-bits byte
+    amdTcb: amdTcbExtensions(b, fields.slice(i + 6)),
   };
 }
 
@@ -82,10 +114,10 @@ export async function verifyAmdChain({ ark, ask, vcek }, product = 'Genoa') {
   if (pin !== AMD_ARK_SHA256[product]) throw new Error(`ARK is not the pinned AMD ${product} root (${pin.slice(0, 12)})`);
   if (!(await rsaPssVerify(A.spki, A.signature, A.tbs))) throw new Error('ARK self-signature failed');
   if (!(await rsaPssVerify(A.spki, S.signature, S.tbs))) throw new Error('ASK is not signed by the ARK');
-  if (!vcek) return { arkPin: pin, askSpki: S.spki, vcekSpki: null };
+  if (!vcek) return { arkPin: pin, askSpki: S.spki, vcekSpki: null, vcekTcb: null };
   const V = parseCert(vcek);
   if (!(await rsaPssVerify(S.spki, V.signature, V.tbs))) throw new Error('VCEK is not signed by the ASK');
-  return { arkPin: pin, askSpki: S.spki, vcekSpki: V.spki };
+  return { arkPin: pin, askSpki: S.spki, vcekSpki: V.spki, vcekTcb: V.amdTcb };
 }
 
 // ---- the report
@@ -137,9 +169,10 @@ export async function verifyReportSignature(report, vcekSpki) {
  * Full check. `binding` says what REPORT_DATA must equal: { first: 32 bytes, second: 32 bytes | null }
  * (null = must be zero; AB#361 boxes put sha256(TLS SPKI) first and zeros second). `allowedMeasurements`
  * is a list of 96-hex strings. An empty list is refused unless `allowAnyMeasurement` is true, which the caller sets
- * only to learn a build's fingerprint; the result then says testMode, not a pass.
+ * only to learn a build's fingerprint; the result then says testMode, not a pass. `minTcb` is an optional
+ * floor on the reported firmware, `{ bl, tee, snp, ucode }`, any part may be left out.
  */
-export async function verifySnp({ report, certs, product = 'Genoa', binding, allowedMeasurements = [], allowAnyMeasurement = false }) {
+export async function verifySnp({ report, certs, product = 'Genoa', binding, allowedMeasurements = [], allowAnyMeasurement = false, minTcb }) {
   const rep = parseReport(report);
   // Before any signature work: a guest that allows debugging or migration can be read or moved by the
   // host, so no later check makes its report worth trusting. Policy is 8 bytes little-endian at offset 8.
@@ -148,7 +181,18 @@ export async function verifySnp({ report, certs, product = 'Genoa', binding, all
   if (policyBit(18)) throw new Error('policy allows migration (bit 18): the host can move this guest');
   const chain = await verifyAmdChain(certs, product);
   if (!chain.vcekSpki) throw new Error('VCEK missing');
+  // The certificate was issued for one firmware level; the report must say the same, or the chip that
+  // signed it is not the one the certificate vouches for. Before the signature so the message names it.
+  const reported = { bl: rep.reportedTcb[0], tee: rep.reportedTcb[1], snp: rep.reportedTcb[6], ucode: rep.reportedTcb[7] };
+  for (const part of ['bl', 'tee', 'snp', 'ucode']) {
+    if (chain.vcekTcb[part] === undefined) throw new Error(`chip certificate has no firmware number for ${part}`);
+    if (chain.vcekTcb[part] !== reported[part]) throw new Error(`firmware ${part} in the chip certificate (${chain.vcekTcb[part]}) does not match the report (${reported[part]})`);
+  }
   if (!(await verifyReportSignature(rep, chain.vcekSpki))) throw new Error('report signature does not verify with the VCEK');
+  // A floor, not a pin: the caller names the oldest firmware it will run on, per part; unset parts are not checked.
+  for (const part of ['bl', 'tee', 'snp', 'ucode']) {
+    if (minTcb?.[part] !== undefined && reported[part] < minTcb[part]) throw new Error(`reported firmware is below the floor: ${part} ${reported[part]} < ${minTcb[part]}`);
+  }
   if (binding) {
     const want = new Uint8Array(64);
     want.set(binding.first, 0);
@@ -167,6 +211,7 @@ export async function verifySnp({ report, certs, product = 'Genoa', binding, all
     chipId: rep.chipId,
     reportedTcb: hex(rep.reportedTcb),
     policy: rep.policy,
+    tcb: reported,
     arkPin: chain.arkPin,
   };
 }

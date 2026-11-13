@@ -68,7 +68,10 @@ closes the stream. Max data frame 64 KiB. Rekey (Noise `REKEY`) every 2^20 frame
 3. VCEK signed by ASK, ASK by ARK, ARK by itself (RSA-PSS, SHA-384, salt 48), and sha256 of the ARK
    certificate DER equals the pin ctcli uses: Genoa `4c6598d1…3db2f1`, Milan `69d063b4…540bcd`.
    VCEK comes from the box's `certs` or from AMD KDS by chip id and TCB through a cache the client owns.
-4. MEASUREMENT (`report[0x90:0xC0]`) is in the client's allowed list, the fingerprint AB#363
+4. The VCEK's four AMD firmware extensions (`1.3.6.1.4.1.3704.1.3.1`, `.3.2`, `.3.3`, `.3.8`: bootloader,
+   TEE, SNP, microcode) equal the report's numbers at `0x180`, `0x181`, `0x186`, `0x187`, checked before the
+   report signature. An optional floor (`minTcb`, `min_tcb`) refuses firmware older than the caller allows.
+5. MEASUREMENT (`report[0x90:0xC0]`) is in the client's allowed list, the fingerprint AB#363
    publishes. An empty list is refused unless the client sets the explicit waiver (`allowAnyMeasurement`, `allow_any_measurement`, the page's `nofp=1`, the shim's `--allow-any-measurement`); it then shows as test mode, never as a pass.
 
 A client that cannot verify shows why and sends nothing further.
