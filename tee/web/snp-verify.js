@@ -140,6 +140,11 @@ export async function verifyReportSignature(report, vcekSpki) {
  */
 export async function verifySnp({ report, certs, product = 'Genoa', binding, allowedMeasurements = [] }) {
   const rep = parseReport(report);
+  // Before any signature work: a guest that allows debugging or migration can be read or moved by the
+  // host, so no later check makes its report worth trusting. Policy is 8 bytes little-endian at offset 8.
+  const policyBit = (n) => (rep.signed[8 + (n >> 3)] >> (n & 7)) & 1;
+  if (policyBit(19)) throw new Error('policy allows debugging (bit 19): the host can read this guest');
+  if (policyBit(18)) throw new Error('policy allows migration (bit 18): the host can move this guest');
   const chain = await verifyAmdChain(certs, product);
   if (!chain.vcekSpki) throw new Error('VCEK missing');
   if (!(await verifyReportSignature(rep, chain.vcekSpki))) throw new Error('report signature does not verify with the VCEK');

@@ -59,6 +59,14 @@ flipped = bytearray(report)
 flipped[0x90] ^= 0x01
 refused("one flipped fingerprint bit refused", lambda: verify(bytes(flipped), ark_der=read("amd-genoa-ark.der")), "InvalidSignature")
 
+# Policy bits are signed, so the policy refusal has to come before the signature check for the message
+# to name the policy. Bit 19 is debug and bit 18 is migration: byte 10 of the report, 0x08 and 0x04.
+for bit, word in ((0x08, "debug"), (0x04, "migration")):
+    bad = bytearray(report)
+    bad[10] |= bit
+    refused(f"{word} policy bit refused", lambda bad=bad: verify(bytes(bad), ark_der=read("amd-genoa-ark.der")), word)
+check("saved report policy has neither bit", report[10] & 0x0C == 0, f"policy {report[8:16][::-1].hex()}")
+
 wrong_binding = json.loads(binding)
 wrong_binding["tls_spki_sha256"] = "0" * 64
 refused("a binding that does not hash to REPORT_DATA refused",

@@ -53,6 +53,15 @@ if (existsSync(join(fx, 'report.bin')) && existsSync(join(fx, 'vcek.der'))) {
     const bad = report.slice(); bad[0x90] ^= 0x01;
     await verifySnp({ report: bad, certs: { ark, ask, vcek }, binding }); check('tampered measurement refused', false);
   } catch (e) { check('tampered measurement refused', /signature/.test(e.message), e.message); }
+  // Policy bits are signed, so a flipped bit also breaks the signature; the policy refusal has to come
+  // first for the message to name the policy. bit 19 = debug (byte 10, 0x08), bit 18 = migration (byte 10, 0x04).
+  for (const [bit, word, re] of [[0x08, 'debug', /debug/i], [0x04, 'migration', /migration/i]]) {
+    try {
+      const bad = report.slice(); bad[10] |= bit;
+      await verifySnp({ report: bad, certs: { ark, ask, vcek }, binding }); check(`${word} policy bit refused`, false);
+    } catch (e) { check(`${word} policy bit refused`, re.test(e.message), e.message); }
+  }
+  check('saved report policy has neither bit', (report[10] & 0x0c) === 0, `policy ${rep.policy}`);
   // The fingerprint pin: the viewer passes fp= and an unlisted image must not render.
   try {
     const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowedMeasurements: [rep.measurement] });
