@@ -2,7 +2,9 @@
 // Which part of the page link carries what. The single-use ticket and the desktop password come from
 // the fragment, which the browser never sends to a server or a relay and keeps out of Referer headers;
 // everything else comes from the query.
-import { readLink } from './link.js';
+import * as linkModule from './link.js';
+
+const { readLink } = linkModule;
 
 let failures = 0;
 const check = (name, ok, detail = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? '  ' + detail : ''}`); if (!ok) failures++; };
@@ -28,6 +30,20 @@ check('fingerprints are trimmed and lower-cased', JSON.stringify(l.allowed) === 
 l = readLink(loc('', ''));
 check('defaults: vnc, a relay on the page host, no fingerprint, no ticket',
   l.target === 'vnc' && l.relay === 'wss://view.example/websockify' && l.allowed.length === 0 && l.ticket === '' && l.nofp === false);
+
+// A ticket or password in the query is dropped, not used. Left alone it would stay unspent for its whole
+// lifetime in the relay's log and the browser history, so the page also refuses and says where it belongs.
+l = readLink(loc(`?target=vnc&ticket=${t}`));
+check('a ticket in the query is reported as misplaced', JSON.stringify(l.misplaced) === '["ticket"]', JSON.stringify(l.misplaced));
+l = readLink(loc('?vncpw=x&ticket=y&target=vnc'));
+check('both secrets in the query are reported', JSON.stringify([...(l.misplaced || [])].sort()) === '["ticket","vncpw"]', JSON.stringify(l.misplaced));
+l = readLink(loc('?target=vnc', `#ticket=${t}`));
+check('nothing is misplaced when the secrets are in the fragment', Array.isArray(l.misplaced) && l.misplaced.length === 0, JSON.stringify(l.misplaced));
+const cleaned = linkModule.cleanSearch?.(`?relay=wss://r/ws&ticket=${t}&target=job&vncpw=x`);
+check('the query without secrets keeps every other setting', cleaned === '?relay=wss%3A%2F%2Fr%2Fws&target=job', String(cleaned));
+check('an empty query stays empty', linkModule.cleanSearch?.('') === '', String(linkModule.cleanSearch?.('')));
+const prob = linkModule.linkProblem?.(readLink(loc(`?ticket=${t}&fp=ab`)));
+check('a misplaced ticket is a problem that points at the #', !!prob && /#/.test(prob.why) && /ticket/.test(prob.why), JSON.stringify(prob));
 
 console.log(failures ? `${failures} failure(s)` : 'all checks passed');
 process.exit(failures ? 1 : 0);

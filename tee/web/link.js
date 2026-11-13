@@ -17,5 +17,28 @@ export function readLink(loc) {
     certs: q.get('certs') || '',
     ticket: secrets.get('ticket') || '',
     vncpw: secrets.get('vncpw') || '',
+    misplaced: ['ticket', 'vncpw'].filter((k) => q.has(k)),
   };
+}
+
+/** The query with the secrets taken out, for the address bar. */
+export function cleanSearch(search) {
+  const q = new URLSearchParams(search);
+  q.delete('ticket');
+  q.delete('vncpw');
+  const s = q.toString();
+  return s ? '?' + s : '';
+}
+
+/** What is wrong with this link for the person holding it, as {title, why, detail}, or null when nothing is. */
+export function linkProblem(link) {
+  if (link.misplaced.length) {
+    return {
+      title: 'Link not accepted',
+      why: `This link has the ${link.misplaced.join(' and ')} before the "?" part. It must come after a "#" instead (...#ticket=...), `
+        + 'so it never reaches the relay or its logs. The one in this link was removed from the address bar and not used; ask for a new link.',
+      detail: `misplaced: ${link.misplaced.join(', ')}`,
+    };
+  }
+  return null;
 }
