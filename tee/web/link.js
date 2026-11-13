@@ -40,5 +40,13 @@ export function linkProblem(link) {
       detail: `misplaced: ${link.misplaced.join(', ')}`,
     };
   }
+  if (!link.allowed.length && !link.nofp) {
+    return {
+      title: 'Link not accepted',
+      why: 'This link does not say which build of the desktop to trust. Add fp=<fingerprint> (the measurement the build was published with) '
+        + 'to the link; to look at an unlisted build only to learn its fingerprint, add nofp=1 instead.',
+      detail: 'no fp= and no nofp=1 in the link',
+    };
+  }
   return null;
 }

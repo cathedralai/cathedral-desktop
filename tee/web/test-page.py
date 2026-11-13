@@ -57,7 +57,7 @@ try:
         logs = []
         page.on("console", lambda m: logs.append(m.text))
         # A link must not be able to switch attestation off: dev=1 is not a page option any more.
-        page.goto("http://127.0.0.1:48080/index.html?relay=ws://127.0.0.1:48080/websockify&target=job&dev=1")
+        page.goto("http://127.0.0.1:48080/index.html?relay=ws://127.0.0.1:48080/websockify&target=job&dev=1&nofp=1")
         page.wait_for_function("document.getElementById('link-text').textContent.startsWith('sealed') || document.getElementById('link-text').textContent === 'refused'", timeout=15000)
         check("page refuses a dev box even when the link says dev=1", page.text_content("#link-text") == "refused" and "no attestation" in (page.text_content("#gone-detail") or ""), page.text_content("#gone-detail"))
 
@@ -79,11 +79,17 @@ try:
         check("JOB answered inside the stream in the browser", proof["text"].strip() == "DONE 1 42", repr(proof["text"]))
 
         page2 = browser.new_page()
-        page2.goto("http://127.0.0.1:48080/index.html?relay=ws://127.0.0.1:48080/websockify&target=job#ticket=not-a-real-ticket")
+        page2.goto("http://127.0.0.1:48080/index.html?relay=ws://127.0.0.1:48080/websockify&target=job&nofp=1#ticket=not-a-real-ticket")
         page2.wait_for_function("document.getElementById('link-text').textContent === 'refused'", timeout=15000)
         check("page refuses a dev box when attestation is required", "no attestation" in (page2.text_content("#gone-detail") or ""), page2.text_content("#gone-detail"))
         # The ticket is a bearer secret: it must not stay in the address bar, the history entry or a screenshot.
         check("the page removes the fragment from the address bar", page2.evaluate("location.hash") == "", page2.url)
+        # No fingerprint choice in the link: the page says what to add, in link terms.
+        page4 = browser.new_page()
+        page4.goto("http://127.0.0.1:48080/index.html?relay=ws://127.0.0.1:48080/websockify&target=job")
+        page4.wait_for_function("document.getElementById('link-text').textContent === 'refused'", timeout=15000)
+        why4 = page4.text_content("#gone-why") or ""
+        check("a link with no fp= and no nofp=1 is refused in words that name both", "fp=" in why4 and "nofp=1" in why4, why4)
         # A ticket in the query is a link made wrong: the page drops it from the address bar and refuses, in words.
         page3 = browser.new_page()
         page3.goto("http://127.0.0.1:48080/index.html?relay=ws://127.0.0.1:48080/websockify&target=job&fp=ab&ticket=in-the-query&vncpw=pw")

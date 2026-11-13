@@ -45,5 +45,11 @@ check('an empty query stays empty', linkModule.cleanSearch?.('') === '', String(
 const prob = linkModule.linkProblem?.(readLink(loc(`?ticket=${t}&fp=ab`)));
 check('a misplaced ticket is a problem that points at the #', !!prob && /#/.test(prob.why) && /ticket/.test(prob.why), JSON.stringify(prob));
 
+// No fingerprint choice: the library's refusal is for developers, so the page words its own for the link holder.
+let noFp = linkModule.linkProblem?.(readLink(loc('?target=vnc')));
+check('no fp= and no nofp=1 is a problem that names both link parts', !!noFp && /fp=/.test(noFp.why) && /nofp=1/.test(noFp.why), JSON.stringify(noFp));
+check('fp= alone is fine', linkModule.linkProblem?.(readLink(loc('?fp=ab'))) === null);
+check('nofp=1 alone is fine', linkModule.linkProblem?.(readLink(loc('?nofp=1'))) === null);
+
 console.log(failures ? `${failures} failure(s)` : 'all checks passed');
 process.exit(failures ? 1 : 0);
