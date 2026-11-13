@@ -1,7 +1,7 @@
 # Sealed stream v1
 
-A byte pipe into a TEE box whose far end is proven by AMD, over any relay. The client (a browser or
-a native program) verifies the box's SEV-SNP report, runs a Noise handshake against the static key
+A byte pipe into a TEE box whose far end an AMD chip report vouches for, over any relay. The client
+(a browser or a native program) verifies the box's SEV-SNP report, runs a Noise handshake against the static key
 that report binds, and from then on every frame is AES-GCM ciphertext. Relays (websockify, the hotel
 bridge, a Cloudflare Worker, a tunnel) carry opaque frames and learn only sizes and timing.
 
@@ -104,6 +104,9 @@ goes mints as it goes (`mint_ticket.minter` passed to `open_stream(mint=...)`). 
 `-noticket` accepts an empty ticket; that mode is for the private spike only and the box prints
 `NOTICKET` at boot.
 
+The ticket key is Cathedral's. It decides who may open a stream to a box; it is not a customer
+key. See "Threats covered and not".
+
 ## Threats covered and not
 
 - Covered: a relay or network that reads or alters frames; a box that is not the measured image
@@ -112,6 +115,11 @@ goes mints as it goes (`mint_ticket.minter` passed to `open_stream(mint=...)`). 
 - Not covered: the host that runs the VM denying service; a client that chooses an empty
   measurement list; Cathedral's control plane keeping the box's lifecycle. gVisor is not in this
   path: the box is the room.
+- Not covered, and the reason for careful wording: Cathedral itself. Cathedral signs the tickets
+  and starts the boxes, so Cathedral can open a stream to a box. The stream keeps relays, the
+  network and the host out of the bytes; it does not keep Cathedral out. A key that only the
+  customer holds is planned on AB#353 and is not built. Until it is live and checked, no page or
+  doc may say that no one, Cathedral included, can see inside a box.
 
 ## Implementation and tests
 
