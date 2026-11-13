@@ -1,9 +1,10 @@
 # Sealed stream v1
 
 A byte pipe into a TEE box whose far end an AMD chip report vouches for, over any relay. The client
-(a browser or a native program) verifies the box's SEV-SNP report, runs a Noise handshake against the static key
-that report binds, and from then on every frame is AES-GCM ciphertext. Relays (websockify, the hotel
-bridge, a Cloudflare Worker, a tunnel) carry opaque frames and learn only sizes and timing.
+(a browser or a native program) verifies the box's SEV-SNP report, runs a Noise handshake against
+the static key that report binds, and from then on every frame is AES-GCM ciphertext. Relays
+(websockify, the hotel bridge, a Cloudflare Worker, a tunnel) carry opaque frames and learn only
+sizes and timing.
 
 Built on the AB#361 link (fresh keys per boot, report through configfs-tsm). Private track (M-H,
 AB#353, cards AB#591 to AB#593). Not production. 6 Nov 2026.
