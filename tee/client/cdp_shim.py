@@ -69,6 +69,9 @@ async def main():
     ap.add_argument("--allow-any-measurement", action="store_true", help="accept any build when no --measurement is given (to learn a fingerprint; tests only)")
     ap.add_argument("--allow-dev", action="store_true", help="accept a dev box with no report (tests only)")
     a = ap.parse_args()
+    # Without a list the report proves a genuine chip, not our image: make the choice explicit before listening.
+    if not a.measurement and not a.allow_any_measurement:
+        ap.error("give --measurement HEX (repeatable) to say which build to trust, or --allow-any-measurement to accept any build")
     bh, bp = a.box.rsplit(":", 1)
     lh, lp = a.listen.rsplit(":", 1)
     verify = Verify(product=a.product, allowed_measurements=a.measurement,
