@@ -24,29 +24,72 @@ class ManifestError(Exception):
     pass
 
 
+def _no_duplicate_keys(pairs):
+    # json.loads keeps the last of two equal keys, so a reader could see one value and the tool use another.
+    seen = {}
+    for k, v in pairs:
+        if k in seen:
+            raise ManifestError(f"duplicate key {k!r}")
+        seen[k] = v
+    return seen
+
+
 def load_manifest(path):
     try:
-        data = json.loads(Path(path).read_text())
+        data = json.loads(Path(path).read_text(), object_pairs_hook=_no_duplicate_keys)
+    except ManifestError as e:
+        raise ManifestError(f"manifest {path}: {e}")
     except (OSError, ValueError) as e:
         raise ManifestError(f"cannot read manifest {path}: {e}")
     validate(data)
     return data
 
 
+def read_cmdline_file(path):
+    """Read a saved command line. One trailing newline is the file's line ending, not part of the
+    command line; any other trailing newline or carriage return is refused, because it would change
+    the measurement while looking the same. A trailing space is kept."""
+    text = Path(path).read_bytes().decode("utf-8")
+    if text.endswith("\n"):
+        text = text[:-1]
+    if text.endswith(("\n", "\r")):
+        raise ManifestError(f"{path}: extra trailing newline or carriage return; a command line file may end with exactly one newline")
+    if not text:
+        raise ManifestError(f"{path}: empty command line")
+    return text
+
+
+def cmdline_from_dm_file(path):
+    """The boot line boot-desktop.py builds around the saved dm-mod.create value (image 4, run 4)."""
+    return f'console=ttyS0 rdinit=/init panic=-1 quiet loglevel=0 dm-mod.create="{read_cmdline_file(path)}"'
+
+
+def _only_keys(obj, allowed, where):
+    for k in obj:
+        if k not in allowed:
+            raise ManifestError(f"{where}: unknown key {k!r}; allowed {', '.join(sorted(allowed))}")
+
+
 def validate(m):
     """Reject anything the fingerprint would silently depend on but the manifest omits."""
     if not isinstance(m, dict):
         raise ManifestError("manifest must be a JSON object")
+    _only_keys(m, ("schema", "description", "tool", "inputs", "cmdline", "launch", "expected"), "manifest")
     if m.get("schema") != 1:
         raise ManifestError("schema must be 1")
     tool = m.get("tool")
     if not isinstance(tool, dict) or tool.get("name") != "sev-snp-measure" or not isinstance(tool.get("version"), str):
         raise ManifestError("tool must name sev-snp-measure and a version")
+    _only_keys(tool, ("name", "version", "mode"), "tool")
+    if tool.get("mode") != "snp":
+        raise ManifestError(f"tool.mode must be exactly \"snp\", got {tool.get('mode')!r}")
     inputs = m.get("inputs")
     if not isinstance(inputs, dict) or set(inputs) != set(INPUT_NAMES):
         raise ManifestError(f"inputs must hold exactly {', '.join(INPUT_NAMES)}")
     for name in INPUT_NAMES:
         entry = inputs[name]
+        if isinstance(entry, dict):
+            _only_keys(entry, ("file", "sha256", "source"), f"inputs.{name}")
         if not isinstance(entry, dict) or not isinstance(entry.get("file"), str) or not entry["file"]:
             raise ManifestError(f"inputs.{name}.file must be a file name")
         f = entry["file"]
@@ -57,6 +100,8 @@ def validate(m):
     if not isinstance(m.get("cmdline"), str) or not m["cmdline"]:
         raise ManifestError("cmdline must be the exact kernel command line string")
     launch = m.get("launch")
+    if isinstance(launch, dict):
+        _only_keys(launch, ("vcpu_type", "kernel_hashes", "policy", "qemu", "memory_note"), "launch")
     if not isinstance(launch, dict) or not isinstance(launch.get("vcpu_type"), str) or not launch["vcpu_type"]:
         raise ManifestError("launch.vcpu_type is required (the CPU model changes the measurement)")
     if launch.get("kernel_hashes") is not True:
@@ -148,8 +193,11 @@ def main(argv=None):
     s = sub.add_parser("check"); s.add_argument("manifest"); s.add_argument("inputs_dir"); s.add_argument("--tool", default="sev-snp-measure")
     s = sub.add_parser("report-measurement"); s.add_argument("report")
     s = sub.add_parser("make")
-    for a in ("firmware", "kernel", "initrd", "cmdline", "vcpu-type", "vcpus", "expected", "version", "out"):
+    for a in ("firmware", "kernel", "initrd", "vcpu-type", "vcpus", "expected", "version", "out"):
         s.add_argument("--" + a, required=True)
+    g = s.add_mutually_exclusive_group(required=True)
+    g.add_argument("--cmdline-file")
+    g.add_argument("--dm-create-file")
     s.add_argument("--note", default="")
     a = ap.parse_args(argv)
     try:
@@ -169,7 +217,8 @@ def main(argv=None):
         elif a.cmd == "report-measurement":
             print(report_measurement(a.report))
         elif a.cmd == "make":
-            m = make_manifest(a.firmware, a.kernel, a.initrd, a.cmdline, a.vcpu_type,
+            cmdline = read_cmdline_file(a.cmdline_file) if a.cmdline_file else cmdline_from_dm_file(a.dm_create_file)
+            m = make_manifest(a.firmware, a.kernel, a.initrd, cmdline, a.vcpu_type,
                               {a.vcpus: a.expected}, a.version, a.note)
             Path(a.out).write_text(json.dumps(m, indent=2) + "\n")
     except ManifestError as e:

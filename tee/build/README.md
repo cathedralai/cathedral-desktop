@@ -7,7 +7,7 @@ script that computes the fingerprint from the inputs and compares it with the ma
 
 ## Run the check
 
-Needs Python 3 and pypi.org once (the tool is installed into a virtual environment from
+Needs Python 3.11 or newer (a pinned dependency needs it) and pypi.org once (the tool is installed into a virtual environment from
 `measure/requirements.txt`, every file pinned by sha256).
 
 ```
@@ -29,6 +29,13 @@ Its files are the ones named under `inputs`; put them in one folder and pass tha
 Shape in `manifest.schema.json`, enforced by `measure/manifest.py`. It holds the three input files by
 hash, the exact kernel command line (which carries the dm-verity root hash), the CPU model, and one
 expected fingerprint per vCPU count.
+
+The parser is strict. `tool.mode` must be exactly `snp`. Any key the schema does not name is an
+error at every level, and so is a key that appears twice in one object, so a misspelled or doubled
+field cannot be ignored. In a manifest, `cmdline` is a JSON string used exactly as written.
+A command line saved in a FILE (as the control reads them) may end with exactly one newline, which is
+the file's line ending and not part of the command line. Any other trailing newline or carriage return
+is an error; a trailing space is kept and changes the fingerprint.
 
 ## Per-size fingerprints
 

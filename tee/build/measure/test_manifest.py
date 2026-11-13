@@ -143,5 +143,154 @@ class Command(unittest.TestCase):
                 mf.report_measurement(short)
 
 
+class Strict(unittest.TestCase):
+    def rejects(self, mutate, text):
+        m = good()
+        mutate(m)
+        with self.assertRaises(mf.ManifestError) as cm:
+            mf.validate(m)
+        self.assertIn(text, str(cm.exception))
+
+    def test_rejects_missing_mode(self):
+        self.rejects(lambda m: m["tool"].pop("mode"), "tool.mode")
+
+    def test_rejects_mode_sev(self):
+        self.rejects(lambda m: m["tool"].update(mode="sev"), "tool.mode")
+
+    def test_rejects_mode_seves(self):
+        self.rejects(lambda m: m["tool"].update(mode="seves"), "tool.mode")
+
+    def test_rejects_unknown_top_level_key(self):
+        self.rejects(lambda m: m.update(cmdlin="x"), "unknown key 'cmdlin'")
+
+    def test_rejects_unknown_nested_key(self):
+        self.rejects(lambda m: m["launch"].update(vcpu_typ="EPYC-v4"), "launch: unknown key 'vcpu_typ'")
+
+    def test_rejects_unknown_key_in_tool_and_inputs(self):
+        self.rejects(lambda m: m["tool"].update(flags="x"), "tool: unknown key")
+        self.rejects(lambda m: m["inputs"]["kernel"].update(sha265="x"), "inputs.kernel: unknown key")
+
+
+class DuplicateKeys(unittest.TestCase):
+    def load(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "m.json")
+            p.write_text(text)
+            return mf.load_manifest(p)
+
+    def test_duplicate_cmdline_is_refused(self):
+        text = EXAMPLE.read_text()
+        text = text.replace('"cmdline":', '"cmdline": "decoy",\n  "cmdline":', 1)
+        self.assertIn('"decoy"', text)
+        with self.assertRaises(mf.ManifestError) as cm:
+            self.load(text)
+        self.assertIn("duplicate key 'cmdline'", str(cm.exception))
+
+    def test_duplicate_nested_key_is_refused(self):
+        text = EXAMPLE.read_text().replace('"vcpu_type":', '"vcpu_type": "EPYC",\n    "vcpu_type":', 1)
+        with self.assertRaises(mf.ManifestError) as cm:
+            self.load(text)
+        self.assertIn("duplicate key 'vcpu_type'", str(cm.exception))
+
+    def test_clean_manifest_still_loads(self):
+        self.load(EXAMPLE.read_text())
+
+
+class CmdlineFile(unittest.TestCase):
+    def read(self, data):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "cmdline.txt")
+            p.write_bytes(data)
+            return mf.read_cmdline_file(p)
+
+    def test_one_trailing_newline_is_not_part_of_the_command_line(self):
+        self.assertEqual(self.read(b"console=ttyS0 quiet\n"), self.read(b"console=ttyS0 quiet"))
+        self.assertEqual(self.read(b"a b\n"), "a b")
+
+    def test_two_trailing_newlines_are_refused(self):
+        with self.assertRaises(mf.ManifestError):
+            self.read(b"a b\n\n")
+
+    def test_crlf_is_refused(self):
+        with self.assertRaises(mf.ManifestError):
+            self.read(b"a b\r\n")
+
+    def test_trailing_space_is_kept_and_changes_the_result(self):
+        self.assertEqual(self.read(b"a b \n"), "a b ")
+        self.assertNotEqual(self.read(b"a b \n"), self.read(b"a b\n"))
+
+    def test_trailing_space_changes_the_measured_value(self):
+        with tempfile.TemporaryDirectory() as d:
+            tool = fake_tool(d)
+            m = good()
+            m["cmdline"] = self.read(b"a b\n")
+            plain = mf.compute_fingerprint(m, d, 2, tool)
+            m["cmdline"] = self.read(b"a b \n")
+            spaced = mf.compute_fingerprint(m, d, 2, tool)
+            self.assertNotEqual(plain, spaced)
+
+    def test_manifest_cmdline_is_used_exactly_as_written(self):
+        m = good()
+        m["cmdline"] = "a b\n"
+        mf.validate(m)
+        self.assertEqual(mf.tool_command(m, "/in", 2)[-1], "a b\n")
+
+    def test_dm_create_file_builds_the_boot_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "desktop.dm-create")
+            p.write_bytes(b"desktop,,,ro,0 1 verity\n")
+            self.assertEqual(mf.cmdline_from_dm_file(p),
+                             'console=ttyS0 rdinit=/init panic=-1 quiet loglevel=0 dm-mod.create="desktop,,,ro,0 1 verity"')
+
+
+def fake_tool(d, name="fake-tool"):
+    """A stand-in for sev-snp-measure: the output depends on vCPU count and on the exact --append bytes."""
+    p = Path(d, name)
+    p.write_text("#!/bin/sh\n"
+                 'if [ "$1" = "--version" ]; then echo "sev-snp-measure 0.0.13"; exit 0; fi\n'
+                 'while [ $# -gt 0 ]; do case "$1" in --vcpus) v="$2";; --append) a="$2";; esac; shift; done\n'
+                 "h=$(printf '%s|%s' \"$v\" \"$a\" | shasum -a 256 | cut -c1-64)\n"
+                 "echo \"${h}${h}\" | cut -c1-96\n")
+    p.chmod(p.stat().st_mode | stat.S_IXUSR)
+    return str(p)
+
+
+class RunCheck(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.tool = fake_tool(self.dir)
+        self.m = good()
+        for name, content in (("firmware", b"fw"), ("kernel", b"kern"), ("initrd", b"rd")):
+            (self.dir / self.m["inputs"][name]["file"]).write_bytes(content)
+            self.m["inputs"][name]["sha256"] = hashlib.sha256(content).hexdigest()
+        self.right = {n: mf.compute_fingerprint(self.m, self.dir, n, self.tool) for n in (2, 4)}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def check(self, expected):
+        self.m["expected"] = expected
+        p = self.dir / "m.json"
+        p.write_text(json.dumps(self.m))
+        args = type("A", (), {"manifest": str(p), "inputs_dir": str(self.dir), "tool": self.tool})()
+        return mf.run_check(args)
+
+    def test_right_fingerprint_passes(self):
+        self.assertEqual(self.check({"2": self.right[2]}), 0)
+
+    def test_wrong_fingerprint_sharing_a_long_prefix_fails(self):
+        near = self.right[2][:-1] + ("0" if self.right[2][-1] != "0" else "1")
+        self.assertEqual(self.check({"2": near}), 1)
+
+    def test_expected_for_another_vcpu_count_fails(self):
+        self.assertNotEqual(self.right[2], self.right[4])
+        self.assertEqual(self.check({"4": self.right[2]}), 1)
+        self.assertEqual(self.check({"2": self.right[4]}), 1)
+
+    def test_one_wrong_size_among_right_ones_fails(self):
+        self.assertEqual(self.check({"2": self.right[2], "4": self.right[2]}), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
