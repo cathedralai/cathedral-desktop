@@ -35,7 +35,7 @@ export function linkProblem(link) {
   if (link.misplaced.length) {
     return {
       title: 'Link not accepted',
-      why: `This link has the ${link.misplaced.join(' and ')} before the "?" part. It must come after a "#" instead (...#ticket=...), `
+      why: `This link carries the ${link.misplaced.join(' and ')} in its "?" part. It must come after a "#" instead (...#ticket=...), `
         + 'so it never reaches the relay or its logs. The one in this link was removed from the address bar and not used; ask for a new link.',
       detail: `misplaced: ${link.misplaced.join(', ')}`,
     };
