@@ -12,7 +12,7 @@ One box at a time; c48 memory is the limit.
 - Rootfs: `INBOX/blueprint2-tee-20261104/rootfs/desktop.squashfs`, `desktop.verity`,
   `desktop.dm-create` (checksums in `desktop.sha256`). Copy to `/root/snptest/`.
 - boxd is inside the rootfs (`/usr/local/bin/boxd`, built from `tee/boxd` during the rootfs build).
-- Host side: `tee/client/` (Python 3.11+, `pip install cryptography playwright websockify`) and
+- Host side: `tee/client/` (Python 3.11+, `pip install cryptography playwright websockify "websockets>=13"`; websockets is for `cdp_shim.py --box ws://...`) and
   `tee/web/` with `bash tee/web/get-novnc.sh` run once.
 
 ## Boot one box
