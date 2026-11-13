@@ -11,7 +11,6 @@ export function readLink(loc) {
     target: q.get('target') || 'vnc',
     allowed: (q.get('fp') || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
     nofp: q.get('nofp') === '1',
-    dev: q.get('dev') === '1',
     product: q.get('product') || 'Genoa',
     room: q.get('room') || '',
     kds: q.get('kds') || '',
