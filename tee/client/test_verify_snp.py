@@ -45,6 +45,24 @@ def refused(name, fn, pattern):
         check(name, pattern in msg or pattern in type(e).__name__, msg)
 
 
+# The chip certificate names its firmware in four AMD extensions (12, 0, 28, 88 for the saved chip); they
+# must equal the report's own numbers at 0x180, 0x181, 0x186, 0x187, and that check runs before the
+# report's signature, so a changed byte is named as a firmware mismatch.
+for off, part in ((0x180, "bl"), (0x181, "tee"), (0x186, "snp"), (0x187, "ucode")):
+    bad = bytearray(report)
+    bad[off] ^= 0x01
+    refused(f"firmware byte {part} changed: refused",
+            lambda bad=bad: verify(bytes(bad), ark_der=read("amd-genoa-ark.der"), allow_any_measurement=True), f"firmware {part}")
+
+# min_tcb is a floor on the reported numbers, checked after the signature; parts left out are not checked.
+tcb = {"bl": report[0x180], "tee": report[0x181], "snp": report[0x186], "ucode": report[0x187]}
+r = verify(ark_der=read("amd-genoa-ark.der"), allow_any_measurement=True, min_tcb=dict(tcb))
+check("floor equal to the reported firmware: accepted", r["ok"], str(tcb))
+for part in tcb:
+    refused(f"floor one above the reported {part}: refused",
+            lambda part=part: verify(ark_der=read("amd-genoa-ark.der"), allow_any_measurement=True, min_tcb={part: tcb[part] + 1}),
+            f"below the floor: {part}")
+
 for label, kw in (("no list", {}), ("empty list", {"allowed_measurements": []}), ("allow_any_measurement false", {"allow_any_measurement": False})):
     refused(f"{label}: refused", lambda kw=kw: verify(ark_der=read("amd-genoa-ark.der"), **kw), "fingerprint")
 

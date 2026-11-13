@@ -61,7 +61,25 @@ class Verify:
     allow_dev: bool = False
     # Only to learn a build's fingerprint: without a list the report proves a genuine chip, not our image.
     allow_any_measurement: bool = False
+    # Optional floor on the reported firmware, {"bl": n, "tee": n, "snp": n, "ucode": n}; parts left out are not checked.
+    min_tcb: dict[str, int] | None = None
     tls_spki: bytes | None = None
+
+
+# AMD's chip certificate carries the firmware numbers it was issued for in these extensions; the value is
+# an OCTET STRING holding a DER INTEGER. The part names are the ones the KDS URL uses.
+_TCB_PARTS = (("bl", "1.3.6.1.4.1.3704.1.3.1", 0x180), ("tee", "1.3.6.1.4.1.3704.1.3.2", 0x181),
+              ("snp", "1.3.6.1.4.1.3704.1.3.3", 0x186), ("ucode", "1.3.6.1.4.1.3704.1.3.8", 0x187))
+
+
+def _cert_tcb(cert: x509.Certificate, part: str, oid: str) -> int:
+    try:
+        raw = cert.extensions.get_extension_for_oid(x509.ObjectIdentifier(oid)).value.value
+    except x509.ExtensionNotFound:
+        raise ValueError(f"chip certificate has no firmware number for {part}") from None
+    if len(raw) < 3 or raw[0] != 0x02 or raw[1] != len(raw) - 2 or raw[1] > 2:
+        raise ValueError(f"chip certificate firmware number for {part} is not a small DER integer")
+    return int.from_bytes(raw[2:], "big")
 
 
 def _kds(url: str, cache: str) -> bytes:
@@ -108,9 +126,20 @@ def verify_snp(report: bytes, static_pub: bytes, binding: str, v: Verify) -> dic
     ark.public_key().verify(ark.signature, ark.tbs_certificate_bytes, pss, hashes.SHA384())
     ark.public_key().verify(ask.signature, ask.tbs_certificate_bytes, pss, hashes.SHA384())
     ask.public_key().verify(vcek.signature, vcek.tbs_certificate_bytes, pss, hashes.SHA384())
+    # The certificate was issued for one firmware level; the report must say the same, or the chip that
+    # signed it is not the one the certificate vouches for. Before the signature so the message names it.
+    for part, oid, off in _TCB_PARTS:
+        in_cert = _cert_tcb(vcek, part, oid)
+        if in_cert != report[off]:
+            raise ValueError(f"firmware {part} in the chip certificate ({in_cert}) does not match the report ({report[off]})")
     r = int.from_bytes(report[0x2A0:0x2A0 + 72], "little")
     s = int.from_bytes(report[0x2E8:0x2E8 + 72], "little")
     vcek.public_key().verify(encode_dss_signature(r, s), report[:0x2A0], ec.ECDSA(hashes.SHA384()))
+    # A floor, not a pin: the oldest firmware the caller will run on, per part.
+    for part, _, off in _TCB_PARTS:
+        floor = (v.min_tcb or {}).get(part)
+        if floor is not None and report[off] < floor:
+            raise ValueError(f"reported firmware is below the floor: {part} {report[off]} < {floor}")
     measurement = report[0x90:0xC0].hex()
     if not v.allowed_measurements and not v.allow_any_measurement:
         raise ValueError("no fingerprint list given: refusing to accept any build without allow_any_measurement")
