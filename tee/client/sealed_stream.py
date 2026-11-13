@@ -58,6 +58,8 @@ class Verify:
     vcek_der: bytes | None = None
     kds_cache: str = os.path.join(HERE, ".kds-cache")
     allow_dev: bool = False
+    # Only to learn a build's fingerprint: without a list the report proves a genuine chip, not our image.
+    allow_any_measurement: bool = False
     tls_spki: bytes | None = None
 
 
@@ -109,6 +111,8 @@ def verify_snp(report: bytes, static_pub: bytes, binding: str, v: Verify) -> dic
     s = int.from_bytes(report[0x2E8:0x2E8 + 72], "little")
     vcek.public_key().verify(encode_dss_signature(r, s), report[:0x2A0], ec.ECDSA(hashes.SHA384()))
     measurement = report[0x90:0xC0].hex()
+    if not v.allowed_measurements and not v.allow_any_measurement:
+        raise ValueError("no fingerprint list given: refusing to accept any build without allow_any_measurement")
     if v.allowed_measurements and measurement not in v.allowed_measurements:
         raise ValueError(f"MEASUREMENT {measurement[:16]} is not an allowed fingerprint")
     return {"ok": True, "test_mode": not v.allowed_measurements, "measurement": measurement, "chip_id": chip, "version": int.from_bytes(report[:4], "little")}

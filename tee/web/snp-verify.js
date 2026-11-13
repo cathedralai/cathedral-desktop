@@ -136,9 +136,10 @@ export async function verifyReportSignature(report, vcekSpki) {
 /**
  * Full check. `binding` says what REPORT_DATA must equal: { first: 32 bytes, second: 32 bytes | null }
  * (null = must be zero; AB#361 boxes put sha256(TLS SPKI) first and zeros second). `allowedMeasurements`
- * is a list of 96-hex strings; an empty list is reported as test mode, not as a pass.
+ * is a list of 96-hex strings. An empty list is refused unless `allowAnyMeasurement` is true, which the caller sets
+ * only to learn a build's fingerprint; the result then says testMode, not a pass.
  */
-export async function verifySnp({ report, certs, product = 'Genoa', binding, allowedMeasurements = [] }) {
+export async function verifySnp({ report, certs, product = 'Genoa', binding, allowedMeasurements = [], allowAnyMeasurement = false }) {
   const rep = parseReport(report);
   // Before any signature work: a guest that allows debugging or migration can be read or moved by the
   // host, so no later check makes its report worth trusting. Policy is 8 bytes little-endian at offset 8.
@@ -155,6 +156,8 @@ export async function verifySnp({ report, certs, product = 'Genoa', binding, all
     if (!equal(rep.reportData, want)) throw new Error('REPORT_DATA does not bind the presented key');
   }
   const measured = allowedMeasurements.length > 0;
+  // Without a list the report proves a genuine chip, not that it runs our image, so a missing list must be a decision.
+  if (!measured && !allowAnyMeasurement) throw new Error('no fingerprint list given: refusing to accept any build without allowAnyMeasurement');
   if (measured && !allowedMeasurements.includes(rep.measurement)) throw new Error(`MEASUREMENT ${rep.measurement.slice(0, 16)} is not an allowed fingerprint`);
   return {
     ok: true,

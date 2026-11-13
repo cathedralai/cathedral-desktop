@@ -46,9 +46,23 @@ if (existsSync(join(fx, 'report.bin')) && existsSync(join(fx, 'vcek.der'))) {
     binding = { first: await sha256(parseCert(read('cert.der')).spki), second: null };
   }
   try {
-    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowedMeasurements: [] });
+    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowedMeasurements: [], allowAnyMeasurement: true });
     check('real report: VCEK chain, signature, REPORT_DATA binding', r.ok, `measurement ${r.measurement.slice(0, 16)} testMode=${r.testMode}`);
   } catch (e) { check('real report', false, e.message); }
+  // No fingerprint list is a refusal unless the caller says, in words, that any build will do.
+  for (const [label, extra] of [['no list', {}], ['empty list', { allowedMeasurements: [] }], ['allowAnyMeasurement false', { allowAnyMeasurement: false }]]) {
+    try {
+      await verifySnp({ report, certs: { ark, ask, vcek }, binding, ...extra }); check(`${label}: refused`, false, 'accepted');
+    } catch (e) { check(`${label}: refused`, /fingerprint/i.test(e.message), e.message); }
+  }
+  try {
+    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true });
+    check('allowAnyMeasurement: accepted and still reported as test mode', r.ok && r.testMode === true, `testMode=${r.testMode}`);
+  } catch (e) { check('allowAnyMeasurement', false, e.message); }
+  try {
+    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true, allowedMeasurements: [rep.measurement] });
+    check('a list wins over the waiver: not test mode', r.ok && r.testMode === false);
+  } catch (e) { check('list with waiver', false, e.message); }
   try {
     const bad = report.slice(); bad[0x90] ^= 0x01;
     await verifySnp({ report: bad, certs: { ark, ask, vcek }, binding }); check('tampered measurement refused', false);

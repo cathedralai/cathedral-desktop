@@ -41,7 +41,8 @@
 </main>
 <script type="module">
   // Query: relay=ws(s)://host:port (websockify to the box's 8444), target=vnc|job, room=ID,
-  //        fp=HEX[,HEX] allowed measurements (empty = test mode, shown), dev=1 accept a dev box,
+  //        fp=HEX[,HEX] allowed measurements (required: without it the page refuses unless nofp=1),
+  //        nofp=1 accept any build, shown as ANY BUILD ACCEPTED (to learn a fingerprint), dev=1 accept a dev box,
   //        certs=URL base serving vcek.der for the chip (optional; else the box's certs or KDS via `kds=`),
   //        ticket=<single-use ticket from mint_ticket.py, one per view: a reload needs a fresh one>,
   //        vncpw=<only for a box whose x11vnc has a password>.
@@ -54,7 +55,7 @@
   const gone = (title, why, detail = '') => { document.getElementById('gone-title').textContent = title; document.getElementById('gone-why').textContent = why; document.getElementById('gone-detail').textContent = detail; document.getElementById('gone').hidden = false; };
   if (q.get('room')) { document.getElementById('room-id').textContent = q.get('room').slice(0, 8); document.getElementById('room').hidden = false; }
   const fetchDer = async (url) => new Uint8Array(await (await fetch(url)).arrayBuffer());
-  const verify = { allowedMeasurements: allowed, allowDev: q.get('dev') === '1', product: q.get('product') || 'Genoa',
+  const verify = { allowedMeasurements: allowed, allowAnyMeasurement: q.get('nofp') === '1', allowDev: q.get('dev') === '1', product: q.get('product') || 'Genoa',
     certs: { ark: await fetchDer('./fixtures/amd-genoa-ark.der').catch(() => undefined), ask: await fetchDer('./fixtures/amd-genoa-ask.der').catch(() => undefined) },
     fetchVcek: q.get('kds') ? (url) => fetchDer(q.get('kds') + encodeURIComponent(url)) : (q.get('certs') ? () => fetchDer(q.get('certs') + '/vcek.der') : undefined) };
   try {
@@ -66,7 +67,7 @@
       else set('link', 'wait', m);
     } });
     const a = stream.attestation;
-    if (a?.ok) set('attest', allowed.length ? 'on' : 'wait', `attested · ${a.measurement.slice(0, 12)}… · chip ${a.chipId.slice(0, 8)}${a.testMode ? ' · NO FINGERPRINT PINNED' : ''}`);
+    if (a?.ok) set('attest', allowed.length ? 'on' : 'wait', `attested · ${a.measurement.slice(0, 12)}… · chip ${a.chipId.slice(0, 8)}${a.testMode ? ' · ANY BUILD ACCEPTED' : ''}`);
     set('link', 'on', `sealed ${target}`);
     window.sealedStream = stream;
     if (target === 'vnc') {
