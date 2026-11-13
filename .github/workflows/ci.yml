@@ -1,0 +1,124 @@
+# Tests for the sealed-desktop box and its verifiers (tee/), on every pull request and push to main.
+# No path filter: a rule that requires these checks cannot be satisfied by a run that never started.
+# The browser job is not a required check until it has run green about ten times in a row.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Exact version the verifier tests were written against. The saved chip certificate has a negative
+  # serial number, which newer releases of the package refuse to load, so this moves only on purpose.
+  CRYPTOGRAPHY_VERSION: '50.0.2'
+
+jobs:
+  boxd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: tee/boxd/go.mod
+      - name: Vet
+        working-directory: tee/boxd
+        run: go vet ./...
+      - name: Test with the race detector
+        working-directory: tee/boxd
+        run: go test -race -count=1 ./...
+      - name: Static build
+        working-directory: tee/boxd
+        run: CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/boxd" .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: boxd
+          path: ${{ runner.temp }}/boxd
+          retention-days: 3
+          if-no-files-found: error
+
+  verifiers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - run: pip install "cryptography==${CRYPTOGRAPHY_VERSION}"
+      - name: Browser verifier
+        run: node tee/web/test-snp-verify.mjs
+      - name: Python verifier
+        run: python tee/client/test_verify_snp.py
+
+  interop:
+    needs: boxd
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - run: pip install "cryptography==${CRYPTOGRAPHY_VERSION}"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: boxd
+          path: ${{ runner.temp }}/bin
+      - name: Make boxd executable
+        run: chmod +x "$RUNNER_TEMP/bin/boxd"
+      - name: Browser stream library against boxd
+        run: node tee/web/test-sealed-stream.mjs "$RUNNER_TEMP/bin/boxd"
+      - name: Python stream client against boxd
+        run: python tee/client/test_sealed_stream.py "$RUNNER_TEMP/bin/boxd"
+
+  browser:
+    needs: boxd
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - run: pip install "cryptography==${CRYPTOGRAPHY_VERSION}" websockify playwright
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: boxd
+          path: ${{ runner.temp }}/bin
+      - name: Make boxd executable
+        run: chmod +x "$RUNNER_TEMP/bin/boxd"
+      # Copies the AMD certificates next to the page; the page test does not use the noVNC files.
+      - name: Fetch page assets
+        run: bash tee/web/get-novnc.sh
+      - name: Page in a real browser
+        env:
+          BOXD: ${{ runner.temp }}/bin/boxd
+        run: python tee/web/test-page.py
+      - name: CDP shim through the sealed stream
+        env:
+          BOXD: ${{ runner.temp }}/bin/boxd
+          CHROME: google-chrome
+        run: python tee/client/test_cdp_shim.py
