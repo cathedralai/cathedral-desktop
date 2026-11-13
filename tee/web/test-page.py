@@ -84,6 +84,13 @@ try:
         check("page refuses a dev box when attestation is required", "no attestation" in (page2.text_content("#gone-detail") or ""), page2.text_content("#gone-detail"))
         # The ticket is a bearer secret: it must not stay in the address bar, the history entry or a screenshot.
         check("the page removes the fragment from the address bar", page2.evaluate("location.hash") == "", page2.url)
+        # A ticket in the query is a link made wrong: the page drops it from the address bar and refuses, in words.
+        page3 = browser.new_page()
+        page3.goto("http://127.0.0.1:48080/index.html?relay=ws://127.0.0.1:48080/websockify&target=job&fp=ab&ticket=in-the-query&vncpw=pw")
+        page3.wait_for_function("document.getElementById('link-text').textContent === 'refused'", timeout=15000)
+        why = page3.text_content("#gone-why") or ""
+        check("a ticket in the query is refused with where it belongs", "#" in why and "ticket" in why, why)
+        check("the query ticket and password are removed from the address bar", "ticket=" not in page3.url and "vncpw=" not in page3.url, page3.url)
         browser.close()
 finally:
     for p in procs:
