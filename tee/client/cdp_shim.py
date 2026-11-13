@@ -4,7 +4,7 @@ Chromium debugging port, so Playwright, browser-use or any CDP client connects t
 bytes cross the relay as ciphertext bound to the box's attestation.
 
     python3 cdp_shim.py --box HOST:8444 --listen 127.0.0.1:9333 --ticket-key ticket.key \
-                        [--measurement HEX ...] [--allow-dev]
+                        (--measurement HEX ... | --allow-any-measurement) [--allow-dev]
     playwright: chromium.connect_over_cdp("http://127.0.0.1:9333")
 
 Chromium builds the webSocketDebuggerUrl from the Host header it sees, so the client keeps coming
@@ -66,11 +66,13 @@ async def main():
     ap.add_argument("--ticket", default="", help="one single-use ticket; good for a single connection only")
     ap.add_argument("--measurement", action="append", default=[], help="allowed MEASUREMENT (hex); repeatable")
     ap.add_argument("--product", default="Genoa")
+    ap.add_argument("--allow-any-measurement", action="store_true", help="accept any build when no --measurement is given (to learn a fingerprint; tests only)")
     ap.add_argument("--allow-dev", action="store_true", help="accept a dev box with no report (tests only)")
     a = ap.parse_args()
     bh, bp = a.box.rsplit(":", 1)
     lh, lp = a.listen.rsplit(":", 1)
-    verify = Verify(product=a.product, allowed_measurements=a.measurement, allow_dev=a.allow_dev)
+    verify = Verify(product=a.product, allowed_measurements=a.measurement,
+                    allow_dev=a.allow_dev, allow_any_measurement=a.allow_any_measurement)
     # CDP opens a connection per target and reconnects freely, and a ticket is
     # single use: one --ticket serves the first connection and nothing after it.
     mint = minter(a.ticket_key, a.target) if a.ticket_key else None

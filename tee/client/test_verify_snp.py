@@ -45,8 +45,11 @@ def refused(name, fn, pattern):
         check(name, pattern in msg or pattern in type(e).__name__, msg)
 
 
-r = verify(ark_der=read("amd-genoa-ark.der"))
-check("saved report accepted, no fingerprint (test mode)", r["ok"] and r["test_mode"], f"measurement {r['measurement'][:16]}")
+for label, kw in (("no list", {}), ("empty list", {"allowed_measurements": []}), ("allow_any_measurement false", {"allow_any_measurement": False})):
+    refused(f"{label}: refused", lambda kw=kw: verify(ark_der=read("amd-genoa-ark.der"), **kw), "fingerprint")
+
+r = verify(ark_der=read("amd-genoa-ark.der"), allow_any_measurement=True)
+check("allow_any_measurement: accepted and still reported as test mode", r["ok"] and r["test_mode"], f"measurement {r['measurement'][:16]}")
 
 r = verify(ark_der=read("amd-genoa-ark.der"), allowed_measurements=[measurement])
 check("its own fingerprint pinned: accepted, not test mode", r["ok"] and not r["test_mode"])

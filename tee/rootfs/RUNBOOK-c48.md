@@ -48,7 +48,7 @@ http://HOST:6090/index.html?relay=ws://HOST:6090/websockify&target=vnc&fp=<MEASU
 ```
 
 The page verifies the report in the browser, shows `attested · <measurement> · chip <id>`, and
-renders the desktop over the stream. With `fp=` empty it says `NO FINGERPRINT PINNED` in the chip.
+renders the desktop over the stream. Without `fp=` the page refuses. To learn a build's fingerprint, add `nofp=1`; the chip then says `ANY BUILD ACCEPTED`.
 Screenshot that chip and the desktop for AB#592.
 
 ## Drive it (CDP, host or Mac through a tunnel)
