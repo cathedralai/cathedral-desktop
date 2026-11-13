@@ -75,6 +75,13 @@ def _kds(url: str, cache: str) -> bytes:
 def verify_snp(report: bytes, static_pub: bytes, binding: str, v: Verify) -> dict:
     if len(report) < 0x2A0 + 144:
         raise ValueError("report too short")
+    # Before any signature work: a guest that allows debugging or migration can be read or moved by the
+    # host, so no later check makes its report worth trusting. Policy is 8 bytes little-endian at offset 8.
+    policy = int.from_bytes(report[8:16], "little")
+    if policy >> 19 & 1:
+        raise ValueError("policy allows debugging (bit 19): the host can read this guest")
+    if policy >> 18 & 1:
+        raise ValueError("policy allows migration (bit 18): the host can move this guest")
     # binding: REPORT_DATA = sha256(canonical(binding)) || zeros, and the binding names the stream key
     bound = json.loads(binding)
     named = bound.get("sealed_stream") or {}
