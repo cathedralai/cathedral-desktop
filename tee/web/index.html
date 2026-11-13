@@ -67,7 +67,6 @@
     await pipe.ready;
     const stream = await SealedStream.open({ pipe, target, ticket: link.ticket, verify, onstatus: (m) => {
       if (m.startsWith('attested')) set('attest', allowed.length ? 'on' : 'wait', m);
-      else if (m.startsWith('dev')) set('attest', 'off', 'dev box: not attested');
       else set('link', 'wait', m);
     } });
     const a = stream.attestation;

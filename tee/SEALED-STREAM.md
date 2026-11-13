@@ -73,6 +73,9 @@ closes the stream. Max data frame 64 KiB. Rekey (Noise `REKEY`) every 2^20 frame
    report signature. An optional floor (`minTcb`, `min_tcb`) refuses firmware older than the caller allows.
 5. MEASUREMENT (`report[0x90:0xC0]`) is in the client's allowed list, the fingerprint AB#363
    publishes. An empty list is refused unless the client sets the explicit waiver (`allowAnyMeasurement`, `allow_any_measurement`, the page's `nofp=1`, the shim's `--allow-any-measurement`); it then shows as test mode, never as a pass.
+6. The report's policy (8 bytes little-endian at `report[8:16]`) has neither bit 19 (debug) nor bit 18
+   (migration) set: a guest that allows either can be read or moved by the host. This is checked first,
+   before any signature work.
 
 A client that cannot verify shows why and sends nothing further.
 
