@@ -65,9 +65,11 @@ try:
         check("JOB answered inside the stream in the browser", reply.strip() == "DONE 1 42", repr(reply))
 
         page2 = browser.new_page()
-        page2.goto("http://127.0.0.1:48080/index.html?relay=ws://127.0.0.1:48080/websockify&target=job")
+        page2.goto("http://127.0.0.1:48080/index.html?relay=ws://127.0.0.1:48080/websockify&target=job#ticket=not-a-real-ticket")
         page2.wait_for_function("document.getElementById('link-text').textContent === 'refused'", timeout=15000)
         check("page refuses a dev box when attestation is required", "no attestation" in (page2.text_content("#gone-detail") or ""), page2.text_content("#gone-detail"))
+        # The ticket is a bearer secret: it must not stay in the address bar, the history entry or a screenshot.
+        check("the page removes the fragment from the address bar", page2.evaluate("location.hash") == "", page2.url)
         browser.close()
 finally:
     for p in procs:

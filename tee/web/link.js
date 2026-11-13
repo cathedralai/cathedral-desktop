@@ -4,6 +4,8 @@
 /** @param {{search: string, hash: string, protocol: string, host: string}} loc a Location, or anything shaped like one */
 export function readLink(loc) {
   const q = new URLSearchParams(loc.search);
+  // Secrets only from the fragment: a query string reaches the relay's access log and Referer headers.
+  const secrets = new URLSearchParams(loc.hash.replace(/^#/, ''));
   return {
     relay: q.get('relay') || ((loc.protocol === 'https:' ? 'wss://' : 'ws://') + loc.host + '/websockify'),
     target: q.get('target') || 'vnc',
@@ -14,7 +16,7 @@ export function readLink(loc) {
     room: q.get('room') || '',
     kds: q.get('kds') || '',
     certs: q.get('certs') || '',
-    ticket: q.get('ticket') || '',
-    vncpw: q.get('vncpw') || '',
+    ticket: secrets.get('ticket') || '',
+    vncpw: secrets.get('vncpw') || '',
   };
 }
