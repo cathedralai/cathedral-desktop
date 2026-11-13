@@ -59,7 +59,7 @@ try:
         except Exception:
             time.sleep(0.2)
     start([BOXD, "-dev", "-noticket", "-tls", "127.0.0.1:38443", "-stream", "127.0.0.1:38444", "-target-cdp", "127.0.0.1:9555"], ready="LISTEN")
-    start([PY, os.path.join(HERE, "cdp_shim.py"), "--box", "127.0.0.1:38444", "--listen", "127.0.0.1:9333", "--allow-dev"], ready="listening")
+    start([PY, os.path.join(HERE, "cdp_shim.py"), "--box", "127.0.0.1:38444", "--listen", "127.0.0.1:9333", "--allow-dev", "--allow-any-measurement"], ready="listening")
     results = [drive("no ticket", 9333)]
 
     # The same run against a box that demands a ticket. One --ticket would open the
@@ -70,7 +70,7 @@ try:
         start([BOXD, "-dev", "-ticket-key", os.path.join(tmp, "ticket.pub"),
                "-tls", "127.0.0.1:38543", "-stream", "127.0.0.1:38544", "-target-cdp", "127.0.0.1:9555"], ready="LISTEN")
         start([PY, os.path.join(HERE, "cdp_shim.py"), "--box", "127.0.0.1:38544", "--listen", "127.0.0.1:9433",
-               "--ticket-key", key, "--allow-dev"], ready="listening")
+               "--ticket-key", key, "--allow-dev", "--allow-any-measurement"], ready="listening")
         results.append(drive("ticket per connection", 9433))
 
     sys.exit(0 if all(results) else 1)

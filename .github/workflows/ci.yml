@@ -66,6 +66,8 @@ jobs:
         run: node tee/web/test-snp-verify.mjs
       - name: Python verifier
         run: python tee/client/test_verify_snp.py
+      - name: CDP shim argument check
+        run: python tee/client/test_cdp_shim_args.py
       - name: Page link rules
         run: node tee/web/test-link.mjs
 
