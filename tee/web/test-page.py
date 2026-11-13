@@ -4,6 +4,7 @@ headless Chromium (Playwright) loading index.html with target=job. Proves WebCry
 in a real browser, frame reassembly over a WebSocket relay, and the page's refusal when attestation
 is required. Needs BOXD env (or ./boxd), websockify and playwright in the venv, noVNC fetched."""
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -24,6 +25,18 @@ def start(cmd, ready=None):
     return p
 
 
+def wait_port(port, timeout=15):
+    # A fixed sleep is a race on a slow runner; the page load must not start before websockify listens.
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            socket.create_connection(("127.0.0.1", port), 0.5).close()
+            return
+        except OSError:
+            time.sleep(0.1)
+    raise RuntimeError(f"nothing listening on 127.0.0.1:{port} after {timeout} s")
+
+
 failures = 0
 
 
@@ -36,7 +49,7 @@ def check(name, ok, detail=""):
 try:
     start([BOXD, "-dev", "-noticket", "-tls", "127.0.0.1:48443", "-stream", "127.0.0.1:48444"], ready="LISTEN")
     start([PY, "-m", "websockify", "--web", HERE, "127.0.0.1:48080", "127.0.0.1:48444"])
-    time.sleep(1.5)
+    wait_port(48080)
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
         browser = pw.chromium.launch(channel="chrome")
