@@ -1,8 +1,8 @@
 """python3 tee/web/test-page.py
 The browser path without a TEE: boxd -dev, websockify relaying ws -> 8444 and serving tee/web, and a
-headless Chromium (Playwright) loading index.html with target=job. Proves WebCrypto X25519 + AES-GCM
-in a real browser, frame reassembly over a WebSocket relay, and the page's refusal when attestation
-is required. Needs BOXD env (or ./boxd), websockify and playwright in the venv, noVNC fetched."""
+headless Chromium (Playwright). Proves WebCrypto X25519 + AES-GCM in a real browser and frame
+reassembly over a WebSocket relay (the library driven directly, with its own dev option), and that the
+page refuses a box without attestation even when the link asks for dev. Needs BOXD env (or ./boxd), websockify and playwright in the venv, noVNC fetched."""
 import os
 import socket
 import subprocess
@@ -56,13 +56,27 @@ try:
         page = browser.new_page()
         logs = []
         page.on("console", lambda m: logs.append(m.text))
+        # A link must not be able to switch attestation off: dev=1 is not a page option any more.
         page.goto("http://127.0.0.1:48080/index.html?relay=ws://127.0.0.1:48080/websockify&target=job&dev=1")
         page.wait_for_function("document.getElementById('link-text').textContent.startsWith('sealed') || document.getElementById('link-text').textContent === 'refused'", timeout=15000)
-        link = page.text_content("#link-text")
-        page.wait_for_function("document.querySelector('#screen pre') !== null", timeout=5000)
-        reply = page.text_content("#screen pre")
-        check("browser handshake through websockify to a dev box", link == "sealed job", f"link={link!r} attest={page.text_content('#attest-text')!r}")
-        check("JOB answered inside the stream in the browser", reply.strip() == "DONE 1 42", repr(reply))
+        check("page refuses a dev box even when the link says dev=1", page.text_content("#link-text") == "refused" and "no attestation" in (page.text_content("#gone-detail") or ""), page.text_content("#gone-detail"))
+
+        # The stream itself in a real browser (WebCrypto X25519 and AES-GCM, frames over a WebSocket relay):
+        # the library is driven directly with its own dev option, since the page no longer offers one.
+        proof = page.evaluate("""async () => {
+            const { SealedStream, websocketPipe } = await import('./sealed-stream.js');
+            const pipe = websocketPipe('ws://127.0.0.1:48080/websockify');
+            await pipe.ready;
+            const s = await SealedStream.open({ pipe, target: 'job', verify: { allowDev: true } });
+            const reply = new Promise((res) => { s.onmessage = (pt) => res(new TextDecoder().decode(pt)); });
+            s.send(new TextEncoder().encode('JOB 1\\n'));
+            const text = await reply;
+            const dev = s.attestation && s.attestation.dev === true;
+            s.close();
+            return { text, dev };
+        }""")
+        check("library handshake through websockify to a dev box, in the browser", proof["dev"] is True, repr(proof))
+        check("JOB answered inside the stream in the browser", proof["text"].strip() == "DONE 1 42", repr(proof["text"]))
 
         page2 = browser.new_page()
         page2.goto("http://127.0.0.1:48080/index.html?relay=ws://127.0.0.1:48080/websockify&target=job#ticket=not-a-real-ticket")

@@ -18,6 +18,7 @@ import hmac
 import json
 import os
 import struct
+import sys
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -263,6 +264,8 @@ async def open_stream(r: asyncio.StreamReader, w: asyncio.StreamWriter, target: 
     if not report:
         if not verify.allow_dev:
             raise RuntimeError("box presented no attestation report")
+        # Everything after this is unproven: the host that relays this stream can sit in the middle of it.
+        print("WARNING: box presented no attestation report; allow_dev is on, so this stream is NOT attested", file=sys.stderr)
         attestation = {"ok": False, "dev": True}
     else:
         attestation = verify_snp(report, rs, att["binding"], verify)
