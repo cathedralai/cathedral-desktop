@@ -86,7 +86,7 @@ that opens more than one stream mints per connection rather than carrying a tick
 - `cdp_shim.py --ticket-key $K` mints one per connection, which is what CDP needs: Chromium opens a
   connection per target and reconnects freely, so a single `--ticket` serves the first and nothing
   after it.
-- viewer: add `&ticket=$T` to the URL (`--target vnc`). The page cannot mint (the mint key stays off
+- viewer: add `#ticket=$T` to the URL (after the `?...` part, as a fragment: the page removes it from the address bar, and a `ticket=` in the query is ignored) (`--target vnc`). The page cannot mint (the mint key stays off
   the browser), so one ticket is one view: a reload needs a fresh `T`. AB#591's mint API is what
   removes that step.
 
