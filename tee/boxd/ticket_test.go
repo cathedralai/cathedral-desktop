@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -174,3 +175,44 @@ func TestNoPinnedKeyRefusesEverything(t *testing.T) {
 		t.Error("ticket accepted by a box with no pinned key")
 	}
 }
+
+// Go's base64 decoder skips line breaks and accepts non-zero spare bits in the last character, so
+// several different strings decode to the same body and signature. A used ticket must stay used
+// under every one of them.
+func TestReplayRefusedForRespelledTicket(t *testing.T) {
+	r := newRig(t)
+	tk := r.sign(r.body(nil))
+	body, sig, _ := strings.Cut(tk, ".")
+
+	// The last character of a 64-byte signature carries four spare bits; change one of them.
+	last := sig[len(sig)-1]
+	idx := strings.IndexByte(base64URLAlphabet, last)
+	if idx < 0 {
+		t.Fatal("signature has a character outside the base64url alphabet")
+	}
+	spare := sig[:len(sig)-1] + string(base64URLAlphabet[idx^1])
+
+	variants := map[string]string{
+		"line break in the body part":         body[:10] + "\n" + body[10:] + "." + sig,
+		"carriage return in the body part":    body[:10] + "\r" + body[10:] + "." + sig,
+		"spare bits changed in the signature": body + "." + spare,
+	}
+
+	for name, v := range variants {
+		// Same decoded body and signature, so each is a valid ticket in its own right.
+		if _, _, ok := verifyTicket(r.pub, v, "vnc", r.static); !ok {
+			t.Fatalf("%s: test is wrong, the variant does not verify at all", name)
+		}
+	}
+
+	if !r.open(tk, "vnc") {
+		t.Fatal("first use refused")
+	}
+	for name, v := range variants {
+		if r.open(v, "vnc") {
+			t.Errorf("%s: a respelled copy of a used ticket opened a second session", name)
+		}
+	}
+}
+
+const base64URLAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
