@@ -3,8 +3,9 @@
 A byte pipe into a TEE box whose far end an AMD chip report vouches for, over any relay. The client
 (a browser or a native program) verifies the box's SEV-SNP report, runs a Noise handshake against
 the static key that report binds, and from then on every frame is AES-GCM ciphertext. Relays
-(websockify, the hotel bridge, a Cloudflare Worker, a tunnel) carry opaque frames and learn only
-sizes and timing.
+(websockify, the hotel bridge, a Cloudflare Worker, a tunnel) carry opaque frames. They see sizes
+and timing, and also the box's attestation report, which is sent in the clear before the handshake:
+the chip id, the build fingerprint (measurement) and the firmware level.
 
 Built on the AB#361 link (fresh keys per boot, report through configfs-tsm). Private track (M-H,
 AB#353, cards AB#591 to AB#593). Not production. 6 Nov 2026.
@@ -113,9 +114,14 @@ key. See "Threats covered and not".
 - Covered: a relay or network that reads or alters frames; a box that is not the measured image
   (measurement check); a box whose key is not the attested one (binding check); replay of the
   handshake (single-use ticket); a client that was never attested to (it fails closed).
-- Not covered: the host that runs the VM denying service; a client that chooses an empty
-  measurement list; Cathedral's control plane keeping the box's lifecycle. gVisor is not in this
+- Not covered: the host that runs the VM denying service; a client that sets the explicit
+  waiver instead of a fingerprint list (it then accepts any build); Cathedral's control plane
+  keeping the box's lifecycle. gVisor is not in this
   path: the box is the room.
+- Not covered: whoever serves the viewer page. The checking runs in the page's own code, so a party
+  that serves the page can change that code. In the runbook setup the relay serves the page, and
+  `link.js` defaults the relay to the page's own origin, so the relay operator is that party. Open
+  the page only from a source you trust, or run the native client.
 - Not covered, and the reason for careful wording: Cathedral itself. Cathedral signs the tickets
   and starts the boxes, so Cathedral can open a stream to a box. The stream keeps relays, the
   network and the host out of the bytes; it does not keep Cathedral out. A key that only the
