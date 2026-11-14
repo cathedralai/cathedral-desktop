@@ -251,7 +251,7 @@ try {
   try { await sv.checkCustomerTicket(await mk(kp), rawPub); check('ticket signed by the customer key is accepted', true); } catch (e) { check('ticket signed by the customer key is accepted', false, e.message); }
   await fails('empty ticket in customer mode: refused by name', () => sv.checkCustomerTicket('', rawPub), /customer mode needs a ticket/);
   await fails('ticket signed by another key: usage error', async () => sv.checkCustomerTicket(await mk(kpOther), rawPub), /customer mode.*signed by the customer key/);
-  await fails('ticket with a changed body: refused', async () => { const t = await mk(kp); sv.checkCustomerTicket(`${b64uOf(new TextEncoder().encode('{"box":"y"}'))}.${t.split('.')[1]}`, rawPub); }, /signed by the customer key/);
+  await fails('ticket with a changed body: refused', async () => { const t = await mk(kp); await sv.checkCustomerTicket(`${b64uOf(new TextEncoder().encode('{"box":"y"}'))}.${t.split('.')[1]}`, rawPub); }, /signed by the customer key/);
   for (const bad of ['abc', 'a.b.c', '!!.??', 'AAAA.AAAA']) await fails(`malformed ticket ${JSON.stringify(bad)}: refused`, () => sv.checkCustomerTicket(bad, rawPub), /customer mode/);
 }
 

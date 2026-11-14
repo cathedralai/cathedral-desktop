@@ -9,7 +9,7 @@
 // reassembled here, so WebSocket relays (websockify) may split or merge TCP chunks freely.
 // `SealedStream.websocketLike(stream)` returns a WebSocket-shaped object that noVNC's RFB accepts.
 
-import { verifySnp, parseReport, kdsVcekUrl, sha256, equal, hex, checkCustomerOptions } from './snp-verify.js';
+import { verifySnp, parseReport, kdsVcekUrl, sha256, equal, hex, checkCustomerOptions, checkCustomerTicket } from './snp-verify.js';
 
 const subtle = globalThis.crypto.subtle;
 const PROTOCOL = 'Noise_NK_25519_AESGCM_SHA256';
@@ -150,6 +150,12 @@ export function message1Payload(target, ticket, customerKey) {
   return JSON.stringify(customerKey === undefined ? { target, ticket } : { target, ticket, customer: customerKey });
 }
 
+/** Message 2 for a client with a customer key must carry mode "customer"; a client without one ignores the member. */
+export function checkReady(ready, customerKey) {
+  if (customerKey === undefined) return;
+  if (ready?.mode !== 'customer') throw new Error('the box did not confirm customer mode');
+}
+
 export class SealedStream {
   /**
    * verify: { certs: {ark, ask, vcek?}, allowedMeasurements: [], allowAnyMeasurement?: false, minTcb?: {bl, tee, snp, ucode}, product, fetchVcek?: async (url) => Uint8Array, allowDev?: false }
@@ -158,7 +164,9 @@ export class SealedStream {
    */
   static async open({ pipe, target, ticket = '', verify, onstatus = () => {} }) {
     // Usage errors and waivers in customer mode are refused before any byte is written.
-    checkCustomerOptions({ customerKey: verify?.customerKey, allowDev: verify?.allowDev, allowAnyMeasurement: verify?.allowAnyMeasurement, allowedMeasurements: verify?.allowedMeasurements });
+    const customerPub = checkCustomerOptions({ customerKey: verify?.customerKey, allowDev: verify?.allowDev, allowAnyMeasurement: verify?.allowAnyMeasurement, allowedMeasurements: verify?.allowedMeasurements });
+    // The ticket must be signed by the customer key, and that is checked before the first byte is written.
+    if (customerPub) await checkCustomerTicket(ticket, customerPub);
     const frames = new Frames();
     pipe.onbytes = (b) => frames.push(b);
     pipe.onclose = () => frames.fail(new Error('pipe closed'));
@@ -198,6 +206,9 @@ export class SealedStream {
     pipe.send(frame(await hs.writeMessage1(te.encode(message1Payload(target, ticket, verify?.customerKey)))));
     const ready = JSON.parse(td.decode(await hs.readMessage2(await frames.next())));
     if (!ready.ok) throw new Error(`box refused: ${ready.error}`);
+    // Only a box that says, inside this authenticated answer, that it is in customer mode may be called bound to the customer's key.
+    try { checkReady(ready, verify?.customerKey); } catch (e) { pipe.close(); throw e; }
+    if (verify?.customerKey !== undefined) s.attestation.customerBound = true;
     const { send, recv } = await hs.split();
     s.send_ = send; s.recv_ = recv; s.target = target;
     onstatus(`open ${target}`);

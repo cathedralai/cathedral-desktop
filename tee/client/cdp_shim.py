@@ -18,8 +18,10 @@ import asyncio
 import sys
 import time
 
-from mint_ticket import minter
-from sealed_stream import Verify, open_stream
+from cryptography.hazmat.primitives import serialization
+
+from mint_ticket import load_key, minter
+from sealed_stream import Verify, check_customer_ticket, open_stream, parse_customer_key
 
 
 async def handle(local_r: asyncio.StreamReader, local_w: asyncio.StreamWriter, box: tuple[str, int], verify: Verify, target: str, ticket: str, mint=None):
@@ -78,6 +80,20 @@ async def main():
             ap.error("customer mode refuses --allow-dev: a box with no report cannot be bound to a key")
         if not a.measurement:
             ap.error("customer mode needs --measurement HEX (repeatable): the build fingerprint must be checked")
+        try:
+            cpub = parse_customer_key(a.customer_key)
+        except ValueError as e:
+            ap.error(str(e))
+        # The tickets must be signed by the customer's own key: one key file that matches, or one ticket that verifies.
+        if a.ticket_key:
+            mine = load_key(a.ticket_key).public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+            if mine != cpub:
+                ap.error("customer mode: the ticket key in --ticket-key is not the customer's key (its public key differs from --customer-key)")
+        else:
+            try:
+                check_customer_ticket(a.ticket, cpub)
+            except ValueError as e:
+                ap.error(f"{e}; give --ticket-key with the customer's own key file")
     # Without a list the report proves a genuine chip, not our image: make the choice explicit before listening.
     if not a.measurement and not a.allow_any_measurement:
         ap.error("give --measurement HEX (repeatable) to say which build to trust, or --allow-any-measurement to accept any build")
