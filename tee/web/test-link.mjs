@@ -31,8 +31,8 @@ l = readLink(loc('', ''));
 check('defaults: vnc, a relay on the page host, no fingerprint, no ticket',
   l.target === 'vnc' && l.relay === 'wss://view.example/websockify' && l.allowed.length === 0 && l.ticket === '' && l.nofp === false);
 
-// A ticket or password in the query is dropped, not used. Left alone it would stay unspent for its whole
-// lifetime in the relay's log and the browser history, so the page also refuses and says where it belongs.
+// A ticket or password in the query is not read as one. link.js reports the link as misplaced, which is what
+// lets the page refuse it and say where the ticket belongs; these checks cover that report and nothing more.
 l = readLink(loc(`?target=vnc&ticket=${t}`));
 check('a ticket in the query is reported as misplaced', JSON.stringify(l.misplaced) === '["ticket"]', JSON.stringify(l.misplaced));
 l = readLink(loc('?vncpw=x&ticket=y&target=vnc'));

@@ -68,6 +68,8 @@ jobs:
         run: python tee/client/test_verify_snp.py
       - name: CDP shim argument check
         run: python tee/client/test_cdp_shim_args.py
+      - name: Stream options reach the verifier
+        run: node tee/web/test-stream-verify.mjs
       - name: Page link rules
         run: node tee/web/test-link.mjs
 
