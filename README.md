@@ -111,7 +111,7 @@ What is true today, and what is not yet, is in [tee/PROMISE.md](tee/PROMISE.md).
 - Before the client sends its ticket or anything you type, it checks the box's attestation report: the AMD
   certificate chain, the report's signature, the build fingerprint against the list the client is given, and
   that the machine does not allow debugging or migration. A link can waive the build list; the page then
-  shows ANY BUILD ACCEPTED.
+  shows ANY BUILD ACCEPTED. The Python client's test flags waive these checks.
 - If a check fails, the page stops and says which one.
 - The client encrypts to a key that only the checked box holds. Relays and the network carry encrypted
   frames. They see sizes, timing and the box's report: chip id, build fingerprint, firmware level.

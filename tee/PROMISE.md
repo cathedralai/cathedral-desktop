@@ -2,14 +2,19 @@
 
 The TEE box is a desktop inside an AMD SEV-SNP confidential machine, viewed through a sealed stream.
 This page says which ways a session's bytes could reach someone else, which are closed, and what closes the
-rest. `tee/test_wording.py` fails the build when README, the Markdown files under `tee/`, the page HTML or
-the strings of the page JavaScript claim more than this page allows. It does not read code comments.
+rest.
+
+`tee/test_wording.py` fails the build when these files use a phrase from the "Not allowed" list below. It does
+not catch every overclaim. It reads Markdown (`README.md` and `tee/**/*.md`), the HTML of `tee/web/*.html`
+(inline script comments included) and the string literals of `tee/web/*.js` (comments in the `.js` files are not
+read). It does not read `desktop/web/index.html`, the messages of the Python client in `tee/client`, or the
+error strings of the box daemon in `tee/boxd` that the page prints.
 
 ## Paths
 
 | Path | Today | What closes it |
 |---|---|---|
-| P1 The host reads guest memory | Partly closed: the clients refuse debug and migration. No firmware floor is set. | Set the firmware floor value (D3). |
+| P1 The host reads guest memory | Partly closed: the clients refuse debug and migration. No firmware floor is set. | Set the firmware floor value (an owner decision, not yet made). |
 | P2 The host boots another image | Closed on QEMU with kernel hashes. Open on Cloud Hypervisor: the host picks the kernel, the initrd and the command line, and open pull request 8 says the default stage0 enforces none of them. | Pass the stage0 control in pull request 8, or sell QEMU only. |
 | P3 Cathedral opens a stream with its ticket key | Open. | A customer key that opens the box instead (customer mode). |
 | P4 A keyless image opens on an empty ticket | Open. | The customer image holds no key and refuses an empty ticket. |
@@ -27,10 +32,12 @@ the strings of the page JavaScript claim more than this page allows. It does not
 | P16 Keys | The box keys are fresh at every boot. The ticket key is Cathedral's. There is no customer key. | Customer mode. |
 | P17 Uploaded code run under a ticket | Open in draft pull request 11. | Allow it only in customer mode. |
 
+Rows marked Closed hold where P2 is closed: QEMU with kernel hashes. On Cloud Hypervisor the host picks the command line, so P9 to P11 are open there.
+
 ## Allowed sentences
 
 - S1 The TEE box runs inside an AMD SEV-SNP confidential machine. The chip encrypts its memory.
-- S2 Before the client sends its ticket or anything you type, it checks the box's attestation report: the AMD certificate chain, the report's signature, the build fingerprint against the list the client is given, and that the machine does not allow debugging or migration. A link can waive the build list; the page then shows ANY BUILD ACCEPTED.
+- S2 Before the client sends its ticket or anything you type, it checks the box's attestation report: the AMD certificate chain, the report's signature, the build fingerprint against the list the client is given, and that the machine does not allow debugging or migration. A link can waive the build list; the page then shows ANY BUILD ACCEPTED. The Python client's test flags waive these checks.
 - S3 If a check fails, the page stops and says which one.
 - S4 The client encrypts to a key that only the checked box holds. Relays and the network carry encrypted frames. They see sizes, timing and the box's report: chip id, build fingerprint, firmware level.
 - S5 The box has no disk it can write to. Its work lives in encrypted memory and is gone when it stops.
@@ -43,8 +50,8 @@ S3 is limited to the page. The Python client does not yet name each failed signa
 
 ## Not allowed
 
-- "No one can see inside", "not even Cathedral", "Cathedral cannot see": not until all of these hold. Customer mode is live in a listed build. A local client checks it. A firmware floor is set (D3). Others can rebuild that build.
-- Any "proof", "proves", "prove" or "provable" about the product.
+- "No one can see inside", "not even Cathedral", "Cathedral cannot see": not until all of these hold. Customer mode is live in a listed build. A local client checks it. A firmware floor is set (an owner decision, not yet made). Others can rebuild that build.
+- Any "proof", "proves", "prove", "provable" or "provably" about the product.
 - "Cathedral-signed". The AMD chip vouches for reports (S9).
 - "Anyone can rebuild": not before the second-host build passes.
 - "The host cannot change the software": not until P2 is closed.
