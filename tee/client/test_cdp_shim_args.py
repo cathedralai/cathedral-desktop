@@ -15,6 +15,14 @@ def check(name, ok, detail=""):
     failures += 0 if ok else 1
 
 
+def shim_safe(*extra):
+    """Like shim, but a shim that kept running (it accepted the arguments) comes back as a failed run instead of an exception."""
+    try:
+        return shim(*extra)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(extra, 0, "", "the shim kept running")
+
+
 def shim(*extra):
     # Port 0 and a box nobody listens on: a shim that gets past argument checks just sits and listens, so a
     # timeout is the failure signal.
@@ -55,22 +63,45 @@ for label, extra, words in (("--allow-any-measurement", [*FP, "--allow-any-measu
                             ("--allow-dev", [*FP, "--allow-dev"], ("customer mode", "--allow-dev")),
                             ("no --measurement", [], ("customer mode", "--measurement"))):
     try:
-        r = shim("--customer-key", KEY, *extra)
+        r = shim_safe("--customer-key", KEY, *extra)
         check(f"--customer-key with {label}: exits non-zero and names the reason", r.returncode != 0 and all(w in r.stderr for w in words), r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "no message")
         check(f"--customer-key with {label}: never starts listening", "listening" not in r.stderr)
     except subprocess.TimeoutExpired:
         check(f"--customer-key with {label}: exits non-zero and names the reason", False, "the shim kept running")
 for label, bad in (("empty", ""), ("not base64url", "!" * 43)):
     try:
-        r = shim("--customer-key", bad, *FP)
+        r = shim_safe("--customer-key", bad, *FP)
         check(f"--customer-key that is {label}: exits non-zero with a message", r.returncode != 0 and "invalid customer key" in r.stderr, r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "no message")
     except subprocess.TimeoutExpired:
         check(f"--customer-key that is {label}: exits non-zero with a message", False, "the shim kept running")
-try:
-    shim("--customer-key", KEY, *FP)
-    check("--customer-key with a fingerprint list is accepted at start", False, "exited")
-except subprocess.TimeoutExpired:
-    check("--customer-key with a fingerprint list is accepted at start", True, "still running when the timeout hit")
+import json  # noqa: E402
+import tempfile  # noqa: E402
+
+sys.path.insert(0, HERE)
+import mint_ticket  # noqa: E402
+
+vec = json.load(open(os.path.join(HERE, "..", "testdata", "customer_host_data_v1.json")))
+for h in vec["weak_keys"]["small_order_hex"] + vec["weak_keys"]["non_canonical_hex"]:
+    wk = mint_ticket.b64u(bytes.fromhex(h))
+    r = shim_safe("--customer-key", wk, *FP)
+    check(f"--customer-key {h[:8]}..{h[-4:]} (weak): exits non-zero with a message", r.returncode != 0 and "invalid customer key" in r.stderr, r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "no message")
+
+with tempfile.TemporaryDirectory() as tmp:
+    mine, other = os.path.join(tmp, "mine.key"), os.path.join(tmp, "other.key")
+    for path in (mine, other):
+        subprocess.run([sys.executable, os.path.join(HERE, "mint_ticket.py"), "keygen", "--out", path], check=True, capture_output=True)
+    mine_pub = mint_ticket.b64u(open(os.path.join(tmp, "mine.pub"), "rb").read())
+    r = shim_safe("--customer-key", mine_pub, *FP)
+    check("--customer-key with no ticket source: exits non-zero and names --ticket-key", r.returncode != 0 and "--ticket-key" in r.stderr and "customer mode" in r.stderr, r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "no message")
+    r = shim_safe("--customer-key", mine_pub, "--ticket-key", other, *FP)
+    check("--customer-key with another key's --ticket-key: exits non-zero by name", r.returncode != 0 and "customer mode" in r.stderr and "ticket key" in r.stderr, r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "no message")
+    r = shim_safe("--customer-key", mine_pub, "--ticket", "", *FP)
+    check("--customer-key with an empty --ticket: exits non-zero by name", r.returncode != 0 and "customer mode" in r.stderr, r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "no message")
+    try:
+        shim("--customer-key", mine_pub, "--ticket-key", mine, *FP)
+        check("--customer-key with its own --ticket-key and a fingerprint list is accepted at start", False, "exited")
+    except subprocess.TimeoutExpired:
+        check("--customer-key with its own --ticket-key and a fingerprint list is accepted at start", True, "still running when the timeout hit")
 
 
 print("all checks passed" if not failures else f"{failures} failure(s)")

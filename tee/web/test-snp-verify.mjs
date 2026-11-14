@@ -219,5 +219,41 @@ try {
   } catch (e) { check('no customer key: same result as before', false, e.message); }
 }
 
+// ---- review fixes (AB#353): weak customer keys, ticket under the customer key, HOST_DATA offset.
+{
+  const weak = [...vec.weak_keys.small_order_hex, ...vec.weak_keys.non_canonical_hex];
+  check('vector: 8 small-order encodings are listed', vec.weak_keys.small_order_hex.length === 8);
+  for (const h of weak) {
+    const k = b64uOf(unhex(h));
+    await fails(`weak customer key ${h.slice(0, 8)}..${h.slice(-4)}: usage error`, () => sv.parseCustomerKey(k), /^invalid customer key/);
+    await fails(`weak customer key ${h.slice(0, 8)}..${h.slice(-4)}: verifySnp refuses it before anything else`, () => verifySnp({ report: read('report.bin'), certs: { ark, ask, vcek: read('vcek.der') }, binding: null, allowedMeasurements: ['ab'.repeat(48)], customerKey: k }), /^invalid customer key/);
+    await fails(`weak customer key ${h.slice(0, 8)}..${h.slice(-4)}: the pure check refuses it`, () => sv.checkCustomerHostData(unhex(vec.customer.host_data_hex), unhex(h)), /^invalid customer key/);
+  }
+  try { sv.parseCustomerKey(vec.customer.public_key_b64u); check('a real customer key is still accepted', true); } catch (e) { check('a real customer key is still accepted', false, e.message); }
+
+  // HOST_DATA is bytes 0xC0 to 0xDF. A synthetic buffer whose neighbours differ, so a wrong offset cannot pass.
+  const buf = new Uint8Array(sv.REPORT_LEN);
+  buf.fill(0x11, 0xA0, 0xC0); buf.fill(0x22, 0xC0, 0xE0); buf.fill(0x33, 0xE0, 0x100);
+  try {
+    check('reportHostData reads bytes 0xC0 to 0xDF', hex(sv.reportHostData(buf)) === '22'.repeat(32), hex(sv.reportHostData(buf)));
+    check('parseReport reports the same HOST_DATA', parseReport(buf).hostData === '22'.repeat(32));
+  } catch (e) { check('reportHostData', false, e.message); }
+
+  // The ticket the client sends in customer mode: present, and signed by the customer key.
+  const kp = await globalThis.crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+  const kpOther = await globalThis.crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+  const rawPub = new Uint8Array(await globalThis.crypto.subtle.exportKey('raw', kp.publicKey));
+  const mk = async (pair, body = '{"box":"x","target":"vnc"}') => {
+    const bb = new TextEncoder().encode(body);
+    const sig = new Uint8Array(await globalThis.crypto.subtle.sign('Ed25519', pair.privateKey, bb));
+    return `${b64uOf(bb)}.${b64uOf(sig)}`;
+  };
+  try { await sv.checkCustomerTicket(await mk(kp), rawPub); check('ticket signed by the customer key is accepted', true); } catch (e) { check('ticket signed by the customer key is accepted', false, e.message); }
+  await fails('empty ticket in customer mode: refused by name', () => sv.checkCustomerTicket('', rawPub), /customer mode needs a ticket/);
+  await fails('ticket signed by another key: usage error', async () => sv.checkCustomerTicket(await mk(kpOther), rawPub), /customer mode.*signed by the customer key/);
+  await fails('ticket with a changed body: refused', async () => { const t = await mk(kp); sv.checkCustomerTicket(`${b64uOf(new TextEncoder().encode('{"box":"y"}'))}.${t.split('.')[1]}`, rawPub); }, /signed by the customer key/);
+  for (const bad of ['abc', 'a.b.c', '!!.??', 'AAAA.AAAA']) await fails(`malformed ticket ${JSON.stringify(bad)}: refused`, () => sv.checkCustomerTicket(bad, rawPub), /customer mode/);
+}
+
 console.log(failures ? `${failures} failure(s)` : 'all checks passed');
 process.exit(failures ? 1 : 0);

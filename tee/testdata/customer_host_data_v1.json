@@ -20,5 +20,25 @@
   },
   "unlabelled_sha256_of_key": {
     "host_data_hex": "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
-  }
+  },
+  "weak_keys": {
+    "note": "A customer key must never be a small-order Ed25519 point: for such a key a ticket verifies with no private key. small_order_hex holds the 8 canonical encodings (each checked here to have order dividing 8); non_canonical_hex holds encodings with y >= 2^255-19 or x = 0 with the sign bit set. A customer key equal to any of these is a usage error in every client and the box refuses it.",
+    "small_order_hex": [
+      "0000000000000000000000000000000000000000000000000000000000000000",
+      "0000000000000000000000000000000000000000000000000000000000000080",
+      "0100000000000000000000000000000000000000000000000000000000000000",
+      "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa"
+    ],
+    "non_canonical_hex": [
+      "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "0100000000000000000000000000000000000000000000000000000000000080",
+      "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    ]
+  },
+  "host_data_offset_note": "HOST_DATA is bytes 0xC0 to 0xDF of the report; REPORT_DATA is 0x50 to 0x8F and MEASUREMENT 0x90 to 0xBF."
 }
