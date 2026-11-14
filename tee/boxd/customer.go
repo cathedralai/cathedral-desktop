@@ -6,6 +6,7 @@ package main
 // compares it with its own HOST_DATA, then checks the ticket against that same key. Cathedral's ticket key is never used.
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -13,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math/big"
 )
 
 var (
@@ -35,6 +37,9 @@ func validateFlags() error {
 		return errors.New("-customer and -noticket cannot be used together: customer mode always needs a ticket")
 	}
 	if *flagDevHostData != "" {
+		if !*flagCustomer {
+			return errors.New("-dev-host-data needs -customer: it only sets the HOST_DATA that customer mode compares")
+		}
 		if !*flagDev {
 			return errors.New("-dev-host-data needs -dev: outside it, HOST_DATA comes from the attestation report")
 		}
@@ -63,6 +68,9 @@ func customerHostData(pub []byte) []byte {
 func checkCustomerHostData(hostData, pub []byte) error {
 	if len(pub) != 32 {
 		return errors.New("customer mode: the customer key is not 32 bytes")
+	}
+	if weakCustomerKey(pub) {
+		return errors.New("customer mode: this customer key is not a usable key (small-order or non-canonical point)")
 	}
 	if len(hostData) != hostDataLen {
 		return fmt.Errorf("customer mode: HOST_DATA is %d bytes, expected %d", len(hostData), hostDataLen)
@@ -108,12 +116,19 @@ func admit(box *boxState, open openMsg) error {
 		}
 		return errTicketRefused
 	}
+	// A box that cannot name a HOST_DATA, or whose HOST_DATA is zero, was not launched for a customer key: say so before anything else.
+	if len(box.hostData) != hostDataLen || bytes.Equal(box.hostData, make([]byte, hostDataLen)) {
+		return errors.New("customer mode: this box was not launched for a customer key (its HOST_DATA is zero or missing)")
+	}
 	if open.Customer == "" {
 		return errors.New("customer mode: the open message has no customer key")
 	}
 	pub, err := base64.RawURLEncoding.Strict().DecodeString(open.Customer)
 	if err != nil || len(pub) != 32 {
 		return errors.New("customer mode: the customer key must be 32 bytes, unpadded base64url")
+	}
+	if weakCustomerKey(pub) {
+		return errors.New("customer mode: this customer key is not a usable key (small-order or non-canonical point)")
 	}
 	if err := checkCustomerHostData(box.hostData, pub); err != nil {
 		return err
@@ -128,7 +143,51 @@ func admit(box *boxState, open openMsg) error {
 	return nil
 }
 
-// Stubs for the review fixes (red step).
-func weakCustomerKey(pub []byte) bool { return false }
+// weakCustomerKey reports a small-order or non-canonical Ed25519 point. For such a key a ticket verifies with no private key.
+// The sign bit is ignored, so a small-order point is caught whichever sign it is written with.
+func weakCustomerKey(pub []byte) bool {
+	if len(pub) != 32 {
+		return true
+	}
+	c := append([]byte(nil), pub...)
+	c[31] &= 0x7f
+	y := new(big.Int).SetBytes(reverse(c))
+	p := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 255), big.NewInt(19))
+	if y.Cmp(p) >= 0 {
+		return true
+	}
+	for _, w := range weakY {
+		if y.Cmp(w) == 0 {
+			return true
+		}
+	}
+	return false
+}
 
-func readyMessage(box *boxState) []byte { return []byte(`{"ok":true}`) }
+func reverse(b []byte) []byte {
+	out := make([]byte, len(b))
+	for i := range b {
+		out[len(b)-1-i] = b[i]
+	}
+	return out
+}
+
+// y values of the points of order dividing 8: 0, 1, p-1 and the two of order 8 (given as little-endian hex).
+var weakY = func() []*big.Int {
+	p := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 255), big.NewInt(19))
+	ys := []*big.Int{big.NewInt(0), big.NewInt(1), new(big.Int).Sub(p, big.NewInt(1))}
+	for _, h := range []string{"26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05", "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"} {
+		b, _ := hex.DecodeString(h)
+		ys = append(ys, new(big.Int).SetBytes(reverse(b)))
+	}
+	return ys
+}()
+
+// readyMessage is message 2's plaintext. Off customer mode it is exactly what main sends; in customer mode it adds a marker, inside
+// the same authenticated answer, so a client holding a customer key can tell the box is in customer mode.
+func readyMessage(box *boxState) []byte {
+	if box.customer {
+		return []byte(`{"ok":true,"mode":"customer"}`)
+	}
+	return []byte(`{"ok":true}`)
+}

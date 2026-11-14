@@ -83,13 +83,17 @@ try {
   const cbox = spawn(boxd, ['-dev', '-customer', '-dev-host-data', 'ab'.repeat(32), '-tls', '127.0.0.1:18543', '-stream', '127.0.0.1:18544'], { stdio: ['ignore', 'ignore', 'pipe'] });
   try {
     await new Promise((res, rej) => { cbox.stderr.on('data', (d) => { if (/LISTEN/.test(d.toString())) res(); }); cbox.on('exit', (c) => rej(new Error(`boxd exited ${c}`))); setTimeout(() => rej(new Error('boxd did not listen')), 5000); });
-    const key = Buffer.alloc(32, 7).toString('base64url');
+    // A real key pair: the client checks that the ticket is signed by the customer key before it sends anything.
+    const kp = await globalThis.crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+    const key = Buffer.from(await globalThis.crypto.subtle.exportKey('raw', kp.publicKey)).toString('base64url');
+    const bb = te.encode('{"box":"x","target":"job"}');
+    const ticket = `${Buffer.from(bb).toString('base64url')}.${Buffer.from(await globalThis.crypto.subtle.sign('Ed25519', kp.privateKey, bb)).toString('base64url')}`;
     for (const [label, verify, re] of [
       ['a dev box', { customerKey: key, allowedMeasurements: ['ab'.repeat(48)] }, /no attestation/],
       ['allowDev', { customerKey: key, allowedMeasurements: ['ab'.repeat(48)], allowDev: true }, /customer mode.*allowDev/],
       ['allowAnyMeasurement', { customerKey: key, allowAnyMeasurement: true }, /customer mode.*allowAnyMeasurement/]]) {
       const pipe = tcpPipe(18544); await pipe.ready;
-      try { await SealedStream.open({ pipe, target: 'job', verify }); check(`customer mode: browser client refuses ${label}`, false, 'opened'); }
+      try { await SealedStream.open({ pipe, target: 'job', ticket, verify }); check(`customer mode: browser client refuses ${label}`, false, 'opened'); }
       catch (e) { check(`customer mode: browser client refuses ${label}`, re.test(e.message), e.message); }
       pipe.close();
     }

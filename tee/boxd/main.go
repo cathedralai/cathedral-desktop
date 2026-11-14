@@ -305,7 +305,7 @@ func serveStream(c net.Conn, box *boxState) {
 		}
 		defer up.Close()
 	}
-	msg2, err := hs.writeMessage2([]byte(`{"ok":true}`))
+	msg2, err := hs.writeMessage2(readyMessage(box))
 	if err != nil {
 		return
 	}
