@@ -82,7 +82,7 @@ values; 0.0.13 is pinned because the c48 notes used it.
   (pinned tarball hash, builder toolchain, initrd base, firmware package hash) are the next step, and a
   kernel rebuilt elsewhere may differ byte for byte. This repository's rootfs script does not pin a
   snapshot or a build date either.
-- What a passing check proves: the arithmetic from these input files to this number, and that for runs
+- What a passing check shows: the arithmetic from these input files to this number, and that for runs
   4 to 7 the number is the one the chip signed. It does not prove the files were built from source, and
   it does not prove a new box reports the number; that needs an AMD host.
 
