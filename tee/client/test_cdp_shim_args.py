@@ -104,5 +104,25 @@ with tempfile.TemporaryDirectory() as tmp:
         check("--customer-key with its own --ticket-key and a fingerprint list is accepted at start", True, "still running when the timeout hit")
 
 
+
+# ---- a key file that is missing, unreadable or not a key is a usage error: one line, exit 2, names the option, never the contents.
+with tempfile.TemporaryDirectory() as tmp:
+    secret = "SECRET-DO-NOT-PRINT-" * 3
+    short, empty, unreadable = (os.path.join(tmp, n) for n in ("short.key", "empty.key", "locked.key"))
+    open(short, "w").write(secret)
+    open(empty, "w").close()
+    with open(unreadable, "wb") as f:
+        f.write(os.urandom(32))
+    os.chmod(unreadable, 0)
+    cases = [("missing file", os.path.join(tmp, "nope.key")), ("unreadable file", unreadable), ("wrong length", short), ("empty file", empty)]
+    for mode, extra in (("without --customer-key", []), ("with --customer-key", ["--customer-key", KEY])):
+        for label, path in cases:
+            r = shim_safe(*extra, "--ticket-key", path, *FP)
+            lines = [x for x in r.stderr.strip().splitlines() if x]
+            check(f"--ticket-key {label}, {mode}: exit 2, no traceback, names the option, no contents",
+                  r.returncode == 2 and "Traceback" not in r.stderr and "--ticket-key" in lines[-1] and "secret" not in r.stderr.lower() and "SECRET" not in r.stderr,
+                  lines[-1] if lines else "no message")
+    os.chmod(unreadable, 0o600)
+
 print("all checks passed" if not failures else f"{failures} failure(s)")
 sys.exit(1 if failures else 0)
