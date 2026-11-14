@@ -333,8 +333,11 @@ def with_host_data(at, value):
 
 ss._verified = _skip_report_signature
 try:
-    r = verify(with_host_data(0xC0, GOOD), ark_der=ARK, customer_key=KEY, **LISTED)
-    check("HOST_DATA pin: the right value at 0xC0 passes the whole check path", r["ok"] is True, str(r))
+    try:
+        r = verify(with_host_data(0xC0, GOOD), ark_der=ARK, customer_key=KEY, **LISTED)
+        check("HOST_DATA pin: the right value at 0xC0 passes the whole check path", r["ok"] is True, str(r))
+    except Exception as e:  # noqa: BLE001
+        check("HOST_DATA pin: the right value at 0xC0 passes the whole check path", False, f"{type(e).__name__}: {e}")
     refused("HOST_DATA pin: the right value at 0xE0 instead is refused as zero", lambda: verify(with_host_data(0xE0, GOOD), ark_der=ARK, customer_key=KEY, **LISTED), "HOST_DATA is zero")
     refused("HOST_DATA pin: another key's value at 0xC0 is refused", lambda: verify(with_host_data(0xC0, bytes.fromhex(vec["other_customer"]["host_data_hex"])), ark_der=ARK, customer_key=KEY, **LISTED), "HOST_DATA does not match")
 finally:

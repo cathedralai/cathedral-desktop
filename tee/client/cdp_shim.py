@@ -72,6 +72,15 @@ async def main():
     ap.add_argument("--allow-dev", action="store_true", help="accept a dev box with no report (tests only)")
     ap.add_argument("--customer-key", help="customer mode: the customer's public key, unpadded base64url of 32 bytes; refuses any box not launched for it, and every waiver")
     a = ap.parse_args()
+    ticket_signer = None
+    if a.ticket_key:
+        # A key file that is missing, unreadable or not a key is a usage error: one line, and never the file's contents.
+        try:
+            ticket_signer = load_key(a.ticket_key)
+        except OSError as e:
+            ap.error(f"--ticket-key: cannot read the key file ({type(e).__name__})")
+        except ValueError:
+            ap.error("--ticket-key: the file is not a 32-byte Ed25519 private key")
     if a.customer_key is not None:
         # Customer mode takes no waiver: HOST_DATA names the key only when the build fingerprint is checked too.
         if a.allow_any_measurement:
@@ -86,7 +95,7 @@ async def main():
             ap.error(str(e))
         # The tickets must be signed by the customer's own key: one key file that matches, or one ticket that verifies.
         if a.ticket_key:
-            mine = load_key(a.ticket_key).public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+            mine = ticket_signer.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
             if mine != cpub:
                 ap.error("customer mode: the ticket key in --ticket-key is not the customer's key (its public key differs from --customer-key)")
         else:
