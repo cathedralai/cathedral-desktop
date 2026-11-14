@@ -4,7 +4,7 @@ Chromium debugging port, so Playwright, browser-use or any CDP client connects t
 bytes cross the relay as ciphertext bound to the box's attestation.
 
     python3 cdp_shim.py --box HOST:8444 --listen 127.0.0.1:9333 --ticket-key ticket.key \
-                        (--measurement HEX ... | --allow-any-measurement) [--allow-dev]
+                        (--measurement HEX ... | --allow-any-measurement) [--allow-dev] [--customer-key KEY]
     playwright: chromium.connect_over_cdp("http://127.0.0.1:9333")
 
 Chromium builds the webSocketDebuggerUrl from the Host header it sees, so the client keeps coming
@@ -68,7 +68,16 @@ async def main():
     ap.add_argument("--product", default="Genoa")
     ap.add_argument("--allow-any-measurement", action="store_true", help="accept any build when no --measurement is given (to learn a fingerprint; tests only)")
     ap.add_argument("--allow-dev", action="store_true", help="accept a dev box with no report (tests only)")
+    ap.add_argument("--customer-key", help="customer mode: the customer's public key, unpadded base64url of 32 bytes; refuses any box not launched for it, and every waiver")
     a = ap.parse_args()
+    if a.customer_key is not None:
+        # Customer mode takes no waiver: HOST_DATA names the key only when the build fingerprint is checked too.
+        if a.allow_any_measurement:
+            ap.error("customer mode refuses --allow-any-measurement: give --measurement HEX instead")
+        if a.allow_dev:
+            ap.error("customer mode refuses --allow-dev: a box with no report cannot be bound to a key")
+        if not a.measurement:
+            ap.error("customer mode needs --measurement HEX (repeatable): the build fingerprint must be checked")
     # Without a list the report proves a genuine chip, not our image: make the choice explicit before listening.
     if not a.measurement and not a.allow_any_measurement:
         ap.error("give --measurement HEX (repeatable) to say which build to trust, or --allow-any-measurement to accept any build")
@@ -76,7 +85,8 @@ async def main():
     lh, lp = a.listen.rsplit(":", 1)
     try:
         verify = Verify(product=a.product, allowed_measurements=a.measurement,
-                        allow_dev=a.allow_dev, allow_any_measurement=a.allow_any_measurement)
+                        allow_dev=a.allow_dev, allow_any_measurement=a.allow_any_measurement,
+                        customer_key=a.customer_key)
     except ValueError as e:
         ap.error(str(e))
     # CDP opens a connection per target and reconnects freely, and a ticket is

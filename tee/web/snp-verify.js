@@ -193,8 +193,56 @@ export function normalizeMeasurements(list) {
   });
 }
 
-export async function verifySnp({ report, certs, product = 'Genoa', binding, allowedMeasurements = [], allowAnyMeasurement = false, minTcb }) {
+// ---- customer mode (AB#353): the box was launched for one customer key, and the chip signed that into HOST_DATA.
+// HOST_DATA = sha256("cathedral-tee-customer/v1" || 0x00 || customer public key). The trailing zero byte is part of the label.
+// The key is written as unpadded base64url of exactly 32 bytes; anything else is a usage error, never "no customer mode".
+const CUSTOMER_DOMAIN = new TextEncoder().encode('cathedral-tee-customer/v1\0');
+
+function customerKeyError(why) { return new Error(`invalid customer key: ${why}`); }
+
+/** The customer key string to its 32 raw bytes. Strict: unpadded, URL-safe alphabet, canonical encoding. */
+export function parseCustomerKey(s) {
+  if (typeof s !== 'string') throw customerKeyError('expected a base64url string');
+  if (!/^[A-Za-z0-9_-]{43}$/.test(s)) throw customerKeyError('expected 43 unpadded base64url characters (32 bytes)');
+  const out = Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '='), (c) => c.charCodeAt(0));
+  if (out.length !== 32 || btoa(String.fromCharCode(...out)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') !== s) throw customerKeyError('not a canonical encoding of 32 bytes');
+  return out;
+}
+
+export async function customerHostData(pub) {
+  if (!(pub instanceof Uint8Array) || pub.length !== 32) throw customerKeyError('expected 32 raw bytes');
+  const pre = new Uint8Array(CUSTOMER_DOMAIN.length + 32);
+  pre.set(CUSTOMER_DOMAIN, 0);
+  pre.set(pub, CUSTOMER_DOMAIN.length);
+  return sha256(pre);
+}
+
+/** Pure check on raw bytes. All 32 bytes are compared with no early return. */
+export async function checkCustomerHostData(hostData, pub) {
+  const want = await customerHostData(pub);
+  if (!(hostData instanceof Uint8Array) || hostData.length !== 32) throw new Error(`HOST_DATA is ${hostData?.length ?? 'not'} bytes, expected 32`);
+  let zero = 0, diff = 0;
+  for (let i = 0; i < 32; i++) { zero |= hostData[i]; diff |= hostData[i] ^ want[i]; }
+  if (zero === 0) throw new Error('HOST_DATA is zero: this box was not launched for a customer key');
+  if (diff !== 0) throw new Error('HOST_DATA does not match the customer key: this box was launched for a different key');
+}
+
+/**
+ * Customer mode takes no waiver. The host chooses HOST_DATA freely for any image, so it names the key only when
+ * the build fingerprint is checked too. Returns the key bytes, or null when no customer key is set (undefined only).
+ */
+export function checkCustomerOptions({ customerKey, allowDev, allowAnyMeasurement, allowedMeasurements }) {
+  if (customerKey === undefined) return null;
+  const pub = parseCustomerKey(customerKey);
+  if (allowDev) throw new Error('customer mode refuses allowDev: a box with no report cannot be bound to a key');
+  if (allowAnyMeasurement) throw new Error('customer mode refuses allowAnyMeasurement: the build fingerprint must be checked');
+  if (!allowedMeasurements || allowedMeasurements.length === 0) throw new Error('customer mode needs a fingerprint list: the build fingerprint must be checked');
+  return pub;
+}
+
+export async function verifySnp({ report, certs, product = 'Genoa', binding, allowedMeasurements = [], allowAnyMeasurement = false, minTcb, customerKey, allowDev = false }) {
   checkTcbFloor(minTcb);
+  const customerPub = checkCustomerOptions({ customerKey, allowDev, allowAnyMeasurement, allowedMeasurements });
   allowedMeasurements = normalizeMeasurements(allowedMeasurements);
   const rep = parseReport(report);
   // Before any signature work: a guest that allows debugging or migration can be read or moved by the
@@ -226,6 +274,7 @@ export async function verifySnp({ report, certs, product = 'Genoa', binding, all
   // Without a list the report proves a genuine chip, not that it runs our image, so a missing list must be a decision.
   if (!measured && !allowAnyMeasurement) throw new Error('no fingerprint list given: refusing to accept any build without allowAnyMeasurement');
   if (measured && !allowedMeasurements.includes(rep.measurement)) throw new Error(`MEASUREMENT ${rep.measurement.slice(0, 16)} is not an allowed fingerprint`);
+  if (customerPub) await checkCustomerHostData(rep.signed.slice(0xC0, 0xE0), customerPub);
   return {
     ok: true,
     testMode: !measured,
@@ -236,5 +285,6 @@ export async function verifySnp({ report, certs, product = 'Genoa', binding, all
     policy: rep.policy,
     tcb: reported,
     arkPin: chain.arkPin,
+    ...(customerPub ? { customerBound: true } : {}),
   };
 }

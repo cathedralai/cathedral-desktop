@@ -1,5 +1,5 @@
 {
-  "_note": "Fixed public test keys (RFC 8032 section 7.1 tests 1 and 2). No private key is held here. HOST_DATA = sha256(domain || public key), domain ends in one zero byte. Read by the JS, Python and (WP3) Go tests. unlabelled_sha256_of_key is sha256(public key) with no domain: it must be refused.",
+  "_note": "Fixed public test keys (RFC 8032 section 7.1 tests 1 and 2); no private key is held here. HOST_DATA = sha256(domain || public key), and the domain ends in one zero byte. The customer key is written as unpadded base64url of exactly 32 bytes, checked strictly (URL-safe alphabet, no padding, canonical encoding), and is sent in the same form as \"customer\" in message 1. unlabelled_sha256_of_key is sha256(public key) with no domain: it must be refused. Read by the JS, Python and Go tests.",
   "domain_ascii": "cathedral-tee-customer/v1",
   "domain_hex": "63617468656472616c2d7465652d637573746f6d65722f763100",
   "customer": {
