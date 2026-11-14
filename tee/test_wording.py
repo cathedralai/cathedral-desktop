@@ -68,10 +68,11 @@ ALLOW = [
 
 SENT = "\x01"  # marks the end of a sentence-like block: list item, table row or cell, paragraph, block tag, JS literal
 _BLOCK_TAGS = {"p", "div", "li", "ul", "ol", "tr", "td", "th", "table", "thead", "tbody", "h1", "h2", "h3", "h4", "h5",
-               "h6", "br", "hr", "section", "article", "main", "header", "footer", "nav", "aside", "pre", "blockquote",
-               "dl", "dt", "dd", "figure", "figcaption", "form", "label", "button", "option", "select", "title"}
+               "h6", "hr", "section", "article", "main", "header", "footer", "nav", "aside", "pre", "blockquote",
+               "dl", "dt", "dd", "figure", "figcaption", "form", "button", "option", "select", "title"}
 
 _HYPHENS = dict.fromkeys(map(ord, "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d"), "-")
+_APOSTROPHES = dict.fromkeys(map(ord, "\u2018\u2019\u02bc\uff07"), "'")
 _INVISIBLE = dict.fromkeys(map(ord, "\u00ad\u200b\u200c\u200d\u2060\ufeff"), None)
 
 
@@ -87,7 +88,7 @@ def _js_unescape(lit):
 def js_strings(src):
     """The text of the string and template literals of JavaScript source. Literals joined by + become one
     string; every other pair is a separate block. Template expressions drop out. Comments are skipped."""
-    parts, i, n, prev_end = [], 0, len(src), None
+    parts, extras, i, n, prev_end = [], [], 0, len(src), None
     while i < n:
         c = src[i]
         if src.startswith("//", i):
@@ -102,6 +103,8 @@ def js_strings(src):
                 j += 2 if src[j] == "\\" else 1
             body = src[i + 1:j]
             if c == "`":
+                # The text around an expression is the string; the literals inside an expression are strings of their own.
+                extras += [js_strings(e) for e in re.findall(r"\$\{([^}]*)\}", body)]
                 body = re.sub(r"\$\{[^}]*\}", "", body)
             body = _js_unescape(body)
             if prev_end is not None and re.fullmatch(r"\s*\+\s*", src[prev_end:i]):
@@ -111,7 +114,7 @@ def js_strings(src):
             prev_end = i = j + 1
         else:
             i += 1
-    return SENT.join(parts)
+    return SENT.join(parts + [e for e in extras if e])
 
 
 _TAG = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)((?:[^<>\"']|\"[^\"]*\"|'[^']*')*)>")
@@ -119,16 +122,19 @@ _ATTR = re.compile(r"\b(?:title|alt|aria-label|placeholder)\s*=\s*(?:\"([^\"]*)\
 
 
 def _markup_text(text):
-    """Entities decoded; comments dropped; each tag becomes a space (a block boundary for block tags) and keeps
-    the values of its title, alt, aria-label and placeholder attributes, each as a block of its own."""
+    """Entities decoded; comments dropped; each tag becomes a space, or a block boundary for a block tag (a <wbr>
+    becomes nothing). The values of title, alt, aria-label and placeholder are not part of the visible text: each
+    is a block of its own, after the text."""
     text = htmllib.unescape(text)
     text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
+    values = []
 
     def tag(m):
-        gap = SENT if m.group(2).lower() in _BLOCK_TAGS else " "
-        values = [a or b for a, b in _ATTR.findall(m.group(3))]
-        return gap + "".join(SENT + v + SENT for v in values) + gap
-    return htmllib.unescape(_TAG.sub(tag, text))
+        name = m.group(2).lower()
+        values.extend(a or b for a, b in _ATTR.findall(m.group(3)))
+        return "" if name == "wbr" else (SENT if name in _BLOCK_TAGS else " ")
+    out = _TAG.sub(tag, text)
+    return htmllib.unescape(out) + "".join(SENT + v for v in values)
 
 
 def _markdown_text(text):
@@ -159,7 +165,7 @@ def normalise(rel, text):
         s = _markup_text(text) + SENT + js_strings(scripts)
     else:
         s = _markdown_text(_markup_text(text))
-    s = unicodedata.normalize("NFKC", s).translate(_HYPHENS).translate(_INVISIBLE)
+    s = unicodedata.normalize("NFKC", s).translate(_HYPHENS).translate(_APOSTROPHES).translate(_INVISIBLE)
     return re.sub(r"(?: ?" + SENT + r" ?)+", " " + SENT + " ", " ".join(s.split())).strip()
 
 
@@ -332,6 +338,42 @@ class GuardSelfTest(unittest.TestCase):
         root = self.tree({"README.md": 'Never say "no one can see inside".\n\nAlso no one can see it.\n'})
         found, _ = scan(root, allow)
         self.assertEqual([h[2] for h in found], ["no one can see"])
+
+    # Review round 3: template expressions, attributes inside a phrase, <br>, typographic apostrophes.
+    def test_string_literals_inside_a_template_expression_are_scanned(self):
+        self.assertEqual(self.rules({"tee/web/a.js": "const msg = `${ready ? 'No one can see inside' : 'Waiting'}`;\n"}), ["no one can see"])
+        self.assertEqual(self.rules({"tee/web/a.js": "const msg = `Status: ${a ? `${b ? \"Cathedral cannot see it\" : ''}` : ''}`;\n"}), ["Cathedral cannot see"])
+        self.assertEqual(self.rules({"tee/web/a.js": "const msg = `Ready ${state}.`;\n"}), [])
+
+    def test_an_attribute_inside_a_visible_phrase_does_not_break_it(self):
+        self.assertEqual(self.rules({"tee/web/p.html": '<p>No one <span title="Privacy">can</span> see inside</p>\n'}), ["no one can see"])
+        self.assertEqual(self.rules({"tee/web/p.html": '<p>No one <a href="#" aria-label="more">can</a> see <img alt="x"> inside</p>\n'}), ["no one can see"])
+
+    def test_an_attribute_value_is_its_own_block(self):
+        self.assertEqual(self.rules({"tee/web/p.html": '<p title="no one"> can see the list</p>\n'}), [])
+        self.assertEqual(self.rules({"tee/web/p.html": '<p title="no one can see">ok</p>\n'}), ["no one can see"])
+
+    def test_a_br_is_a_line_wrap_not_a_sentence_end(self):
+        for markup in ("<p>No one<br>can see inside</p>", "<p>No one<br/>can see inside</p>", "<p>No one<BR />can see inside</p>"):
+            with self.subTest(markup=markup):
+                self.assertEqual(self.rules({"tee/web/p.html": markup + "\n"}), ["no one can see"])
+
+    def test_inline_tags_do_not_end_a_sentence(self):
+        self.assertEqual(self.rules({"tee/web/p.html": "<p>no one <label>can</label> see inside</p>\n"}), ["no one can see"])
+        self.assertEqual(self.rules({"tee/web/p.html": "<p>no<wbr>one can see inside</p>\n"}), ["no one can see"])
+
+    def test_block_tags_still_end_a_sentence(self):
+        for markup in ("<ul><li>no one</li><li>can see the screen</li></ul>", "<p>no one</p><p>can see it</p>",
+                       "<h2>no one</h2><p>can see it</p>", "<table><tr><td>no one</td><td>can see</td></tr></table>",
+                       "<div>no one</div><div>can see</div>"):
+            with self.subTest(markup=markup):
+                self.assertEqual(self.rules({"tee/web/p.html": markup + "\n"}), [])
+
+    def test_typographic_apostrophes_are_the_ascii_apostrophe(self):
+        for ap in ("\u2018", "\u2019", "\u02bc", "\uff07", "'"):
+            with self.subTest(apostrophe=ap):
+                self.assertEqual(self.rules({"README.md": f"Cathedral can{ap}t see the screen.\n"}), ["Cathedral cannot see"])
+                self.assertEqual(self.rules({"README.md": f"The host can{ap}t change the software.\n"}), ["host cannot change the software"])
 
     # The verbs read and look are banned again; only the frames sentence (S4) is honest.
     def test_cannot_read_and_cannot_look_are_banned(self):
