@@ -95,3 +95,34 @@ that opens more than one stream mints per connection rather than carrying a tick
 The TEE box runs x11vnc with no password (`desktop-up --vnc-auth none`, set by `box-init`): it
 listens on localhost inside the box and the sealed stream, attested and ticketed, is the gate. The
 viewer still handles a box that asks for one, and the public-tunnel path keeps its password.
+
+## Ten boxes in one sequence (AB#364)
+
+`tee/client/combined_check.py` runs what a customer buys, per box: boot, REPORT over TLS on 8443,
+AMD chain plus key binding plus MEASUREMENT against the published fingerprint, the sealed stream to
+that same key, then a real job over target `run` (upload a static binary, run it, return output and
+exit code). One box at a time; each box is killed (process group) before the next boots.
+
+Inputs: an image with the `run` target in boxd (this changes the root hash, so the MEASUREMENT
+moves: publish the new one for AB#363 first), a launch script that boots one box with the serial
+console on stdout (the QEMU line above, or Cloud Hypervisor), a static test binary, and a tampered
+image (for example the same rootfs with one file changed and a fresh root hash, or the same image
+with SNP policy debug allowed).
+
+```sh
+K=~/Documents/TOOLS/.credentials/cathedral-tee-ticket-20261106.key
+printf 'package main\nimport "fmt"\nfunc main(){fmt.Println("hello from the box")}\n' > /tmp/hello.go
+CGO_ENABLED=0 go build -o /tmp/hello /tmp/hello.go
+python3 tee/client/combined_check.py --boxes 10 \
+  --launch '/root/snptest/launch-desktop.sh {i}' \
+  --fingerprint-file /root/snptest/fingerprint.txt --ticket-key $K \
+  --binary /tmp/hello --expect-output 'hello from the box' \
+  --tampered-launch '/root/snptest/launch-desktop.sh tampered' \
+  --json-out ~/Documents/INBOX/ab364-ten-boxes.json
+```
+
+It prints one line per box, a table of per-step times (boot to `LISTEN`, or to `DESKTOP ready`
+with `--wait-desktop`; report; link; verify; job) with min, median and max, the offline tamper
+checks on a real report, and `ALL CHECKS PASSED` with exit 0 only when all ten pass and the tampered
+box is refused. A tampered box counts as refused whether it fails to boot (verity), serves no
+report, or fails verification; it never gets a job. Post the table and the JSON on AB#364.

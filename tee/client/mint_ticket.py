@@ -95,7 +95,7 @@ def main():
     i = sub.add_parser("issue")
     i.add_argument("--key", default="ticket.key")
     i.add_argument("--box", required=True, help="HOST:PORT of the box's sealed stream (8444), or its base64 static key")
-    i.add_argument("--target", required=True, choices=["vnc", "cdp", "job"])
+    i.add_argument("--target", required=True, choices=["vnc", "cdp", "job", "run"])
     i.add_argument("--ttl", type=int, default=120, help=f"seconds, at most {TTL_MAX}")
     a = ap.parse_args()
     if a.cmd == "keygen":

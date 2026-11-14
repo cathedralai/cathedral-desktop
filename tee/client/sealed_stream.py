@@ -59,6 +59,7 @@ class Verify:
     kds_cache: str = os.path.join(HERE, ".kds-cache")
     allow_dev: bool = False
     tls_spki: bytes | None = None
+    allow_debug: bool = False
 
 
 def _kds(url: str, cache: str) -> bytes:
@@ -101,6 +102,9 @@ def verify_snp(report: bytes, static_pub: bytes, binding: str, v: Verify) -> dic
     r = int.from_bytes(report[0x2A0:0x2A0 + 72], "little")
     s = int.from_bytes(report[0x2E8:0x2E8 + 72], "little")
     vcek.public_key().verify(encode_dss_signature(r, s), report[:0x2A0], ec.ECDSA(hashes.SHA384()))
+    # POLICY bit 19 lets the host debug the guest: same MEASUREMENT, but its memory is readable.
+    if (int.from_bytes(report[0x08:0x10], "little") >> 19) & 1 and not v.allow_debug:
+        raise ValueError("guest policy allows debugging")
     measurement = report[0x90:0xC0].hex()
     if v.allowed_measurements and measurement not in v.allowed_measurements:
         raise ValueError(f"MEASUREMENT {measurement[:16]} is not an allowed fingerprint")
@@ -264,4 +268,7 @@ async def open_stream(r: asyncio.StreamReader, w: asyncio.StreamWriter, target: 
     if not ready.get("ok"):
         raise RuntimeError(f"box refused: {ready.get('error')}")
     send, recv = hs.split()
-    return Stream(r, w, send, recv, attestation)
+    s = Stream(r, w, send, recv, attestation)
+    # What the handshake was bound to, so a caller can compare it with a report fetched elsewhere.
+    s.report, s.static, s.binding = report, rs, att.get("binding", "")
+    return s

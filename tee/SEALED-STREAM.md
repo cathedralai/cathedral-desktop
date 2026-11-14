@@ -16,7 +16,21 @@ AB#353, cards AB#591 to AB#593). Not production. 6 Nov 2026.
 | 8444 | sealed stream (this document), plain TCP | browsers through a relay, native clients |
 
 Targets: `vnc` (127.0.0.1:5901), `cdp` (127.0.0.1:9222), `job` (the box's own `JOB` handler, for
-tests). Addresses are flags on boxd (`-target-vnc`, `-target-cdp`).
+tests), `run` (a customer job, below). Addresses are flags on boxd (`-target-vnc`, `-target-cdp`).
+
+### Target `run` (AB#364)
+
+Upload one static binary, run it once, get its exit code and output, all inside the stream
+(`tee/boxd/run.go`). Client frames: `{"size":N,"args":[...],"timeout_s":T}`, then the N bytes.
+Box frames: `{"exit":E,"bytes":L,"truncated":b,"timed_out":b,"signal":"...","sha256":"..."}`, then
+L bytes of combined stdout and stderr; or `{"error":"..."}`. Limits: 64 MiB binary, 64 args,
+1 to 300 s (default 30), 1 MiB output, one job at a time, 120 s to finish the upload. `exit` is -1
+when the process was killed. A box running `-noticket` outside `-dev` refuses `run`.
+
+boxd is root inside the box, and root could ask configfs-tsm for a report over any REPORT_DATA or
+read the box keys from `/proc`. So when boxd is root the job runs as uid 65534 in its own process
+group and its own pid, mount and network namespaces (loopback only: no route to VNC, CDP or boxd),
+and the timeout kills the whole group.
 
 ## Key binding
 
@@ -116,6 +130,8 @@ goes mints as it goes (`mint_ticket.minter` passed to `open_stream(mint=...)`). 
 - Native: `tee/client/sealed_stream.py` (cryptography lib) and `tee/client/cdp_shim.py`, a local
   TCP listener that opens one stream per connection so Playwright's `connect_over_cdp` and
   browser-use work unchanged. Tests: `tee/client/test_sealed_stream.py BOXD`, `tee/client/test_cdp_shim.py`.
+- Target `run` and the AB#364 ten-box runner: `tee/boxd/run.go`, `tee/client/combined_check.py`.
+  Tests: `tee/client/test_combined_check.py BOXD` (fixtures, run target, end to end on dev boxes).
 - Relay for the spike: `websockify PORT BOX_IP:8444` on the host; it needs no change.
 
 Measured on the Mac against `boxd -dev` (no TEE, loopback): handshake 4 to 23 ms native, Playwright

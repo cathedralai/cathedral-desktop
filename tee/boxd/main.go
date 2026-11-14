@@ -268,8 +268,14 @@ func serveStream(c net.Conn, box *boxState) {
 		writeFrame(c, msg2)
 		return
 	}
+	if target == "run" && *flagNoTicket && !*flagDev {
+		// run executes uploaded code: never behind an empty ticket outside a dev box.
+		msg2, _ := hs.writeMessage2([]byte(`{"ok":false,"error":"run needs tickets"}`))
+		writeFrame(c, msg2)
+		return
+	}
 	var up net.Conn
-	if target != "job" {
+	if target != "job" && target != "run" {
 		up, err = net.DialTimeout("tcp", target, 5*time.Second)
 		if err != nil {
 			msg2, _ := hs.writeMessage2([]byte(`{"ok":false,"error":"target not listening"}`))
@@ -288,8 +294,12 @@ func serveStream(c net.Conn, box *boxState) {
 	send, recv := hs.split()
 	c.SetDeadline(time.Time{})
 	console("STREAM " + open.Target)
-	if target == "job" {
+	switch target {
+	case "job":
 		pipeJob(c, send, recv)
+		return
+	case "run":
+		serveRun(c, send, recv)
 		return
 	}
 	pipe(c, up, send, recv)
@@ -303,6 +313,8 @@ func resolveTarget(t string) (string, error) {
 		return *flagCDP, nil
 	case "job":
 		return "job", nil
+	case "run":
+		return "run", nil
 	}
 	return "", errors.New("unknown target")
 }
