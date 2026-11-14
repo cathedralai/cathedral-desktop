@@ -9,7 +9,8 @@
   :root { --bg: #000; --panel: #0B0D11; --line: #222831; --ink: #ECE9E1; --body: #D6D2C8; --mute: #8E9AA6; --acc: #F06E4A; --ok: #3DD68C; --bad: #FF6B7D; }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; background: var(--bg); color: var(--body); font: 14px/1.4 Inter, system-ui, -apple-system, sans-serif; }
-  body { display: grid; grid-template-rows: 44px 1fr; }
+  body { display: grid; grid-template-rows: 44px 1fr auto; }
+  #hosted { padding: 6px 16px; background: var(--panel); border-top: 1px solid var(--line); color: var(--body); font: 12px/1.4 "JetBrains Mono", ui-monospace, monospace; }
   header { display: flex; align-items: center; gap: 14px; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
   .mark { color: var(--ink); font-weight: 600; } .mark span { color: var(--mute); font-weight: 400; }
   .chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; font: 12px/1 "JetBrains Mono", ui-monospace, monospace; color: var(--mute); }
@@ -39,6 +40,7 @@
     <p><code id="gone-detail"></code></p>
   </div>
 </main>
+<div id="hosted" role="note">Whoever serves this page can see your screen.</div>
 <script type="module">
   // Query: relay=ws(s)://host:port (websockify to the box's 8444), target=vnc|job, room=ID,
   //        fp=HEX[,HEX] allowed measurements (required: without it the page refuses unless nofp=1),
@@ -48,8 +50,10 @@
   //        ticket=<single-use ticket from mint_ticket.py, one per view: a reload needs a fresh one>,
   //        vncpw=<only for a box whose x11vnc has a password>.
   import { SealedStream, websocketPipe } from './sealed-stream.js';
-  import { readLink, cleanSearch, linkProblem } from './link.js';
+  import { readLink, cleanSearch, linkProblem, hostedLabel } from './link.js';
   const link = readLink(location);
+  // First, before anything is fetched or connected: the link has no say in whether this shows.
+  document.getElementById('hosted').textContent = hostedLabel(location);
   // The fragment holds a single-use ticket and maybe a password; take it out of the address bar and history entry.
   if (location.hash || link.misplaced.length) history.replaceState(null, '', location.pathname + cleanSearch(location.search));
   const { relay, target, allowed } = link;
