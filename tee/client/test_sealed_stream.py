@@ -354,6 +354,7 @@ async def customer_box():
             att, ready, s = await raw_open(28644, tk(cust), field)
             check("customer mode: a dev box says so in ATTEST, as today", att.get("dev") is True and not att.get("report"), str(sorted(att)))
             check("customer mode: the customer key opens the box", ready.get("ok") is True and s is not None, str(ready))
+            check("customer mode: message 2 carries the marker mode customer", ready == {"ok": True, "mode": "customer"}, str(ready))
             if s:
                 await s.send(b"JOB 1\n")
                 check("customer mode: the opened stream works", (await s.recv()).decode() == "DONE 1 42\n")
@@ -376,6 +377,15 @@ async def customer_box():
             _, ready, _ = await raw_open(28644, tk(cust), mint_ticket.b64u(raw(cust)[:31]))
             check("customer mode: a 31-byte customer field is refused", ready.get("ok") is False, str(ready))
 
+            # A client with no customer key, against a customer box, gets the message that names customer mode.
+            r, w = await asyncio.open_connection("127.0.0.1", 28644)
+            try:
+                await open_stream(r, w, target="job", verify=Verify(allow_dev=True), ticket="")
+                check("customer mode: a client with no customer key is refused with a message naming customer mode", False, "opened")
+            except RuntimeError as e:
+                check("customer mode: a client with no customer key is refused with a message naming customer mode", "customer mode" in str(e), str(e))
+            w.close()
+
             # The real clients keep refusing a dev box in customer mode, and refuse the waiver that would let them through.
             r, w = await asyncio.open_connection("127.0.0.1", 28644)
             try:
@@ -391,6 +401,15 @@ async def customer_box():
                 check("customer mode: allow_dev cannot be combined with a customer key", "allow_dev" in str(e), str(e))
         finally:
             box.kill()
+
+        # Off customer mode, message 2 is exactly what main sends.
+        plain, _ = start_box("-noticket", ports=(28843, 28844))
+        try:
+            _, ready, s = await raw_open(28844, "", None)
+            check("off customer mode: message 2 is exactly {\"ok\": true}, no marker", ready == {"ok": True}, str(ready))
+            s and s.close()
+        finally:
+            plain.kill()
 
         # No HOST_DATA at all: one clear line at start, and every stream refused.
         box, lines = start_box("-customer", ports=(28743, 28744))

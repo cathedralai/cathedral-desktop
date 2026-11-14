@@ -36,6 +36,10 @@ type vectorFile struct {
 	Unlabelled struct {
 		HostDataHex string `json:"host_data_hex"`
 	} `json:"unlabelled_sha256_of_key"`
+	Weak struct {
+		SmallOrder   []string `json:"small_order_hex"`
+		NonCanonical []string `json:"non_canonical_hex"`
+	} `json:"weak_keys"`
 }
 
 func loadVector(t *testing.T) vectorFile {
@@ -374,5 +378,78 @@ func TestAttestAnswerIsUnchanged(t *testing.T) {
 	dev.customer, dev.hostData = true, customerHostData(pub)
 	if got := attestBytes(t, dev); got != wantDev {
 		t.Fatalf("a dev box in customer mode must still say dev\n got %s", got)
+	}
+}
+
+// ---- review fixes (AB#353)
+
+func TestWeakCustomerKeys(t *testing.T) {
+	v := loadVector(t)
+	if len(v.Weak.SmallOrder) != 8 {
+		t.Fatalf("the vector must list 8 small-order encodings, has %d", len(v.Weak.SmallOrder))
+	}
+	if weakCustomerKey(unhex(t, v.Customer.PubHex)) {
+		t.Error("a real key was called weak")
+	}
+	all := append(append([]string{}, v.Weak.SmallOrder...), v.Weak.NonCanonical...)
+	for _, h := range all {
+		pub := unhex(t, h)
+		if !weakCustomerKey(pub) {
+			t.Errorf("%s was not recognised as weak", h)
+		}
+		if err := checkCustomerHostData(customerHostData(pub), pub); err == nil {
+			t.Errorf("%s: the pure check accepted a weak key whose launch value matches", h)
+		}
+		// The box was launched for this weak key; a ticket forged with no private key must still be refused.
+		c := newCustomerRig(t)
+		c.box.hostData = customerHostData(pub)
+		field := base64.RawURLEncoding.EncodeToString(pub)
+		forged := 0
+		for n := 0; n < 40 && forged == 0; n++ {
+			body, _ := json.Marshal(c.body(nil))
+			for _, r := range all {
+				sig := append(unhex(t, r), make([]byte, 32)...) // R from the list, S = 0
+				ticket := base64.RawURLEncoding.EncodeToString(body) + "." + base64.RawURLEncoding.EncodeToString(sig)
+				if _, _, ok := verifyTicket(pub, ticket, "vnc", c.box.staticPub); ok {
+					forged++
+					if err := admit(c.box, openMsg{Target: "vnc", Ticket: ticket, Customer: field}); err == nil {
+						t.Errorf("%s: a ticket forged without a private key was admitted", h)
+					}
+					break
+				}
+			}
+		}
+		if err := admit(c.box, openMsg{Target: "vnc", Ticket: "x.y", Customer: field}); err == nil || !strings.Contains(err.Error(), "customer key") {
+			t.Errorf("%s: a weak key must be refused as a customer key, got %v", h, err)
+		}
+	}
+}
+
+func TestMessage2Marker(t *testing.T) {
+	off := &boxState{}
+	if got := string(readyMessage(off)); got != `{"ok":true}` {
+		t.Errorf("message 2 off customer mode must stay exactly main's bytes, got %s", got)
+	}
+	on := &boxState{customer: true}
+	if got := string(readyMessage(on)); got != `{"ok":true,"mode":"customer"}` {
+		t.Errorf("message 2 in customer mode must carry the marker, got %s", got)
+	}
+}
+
+func TestZeroHostDataSaysNotLaunchedForCustomer(t *testing.T) {
+	c := newCustomerRig(t)
+	for name, hd := range map[string][]byte{"zero": make([]byte, 32), "none": nil} {
+		c.box.hostData = hd
+		err := c.admit(c.signWith(c.custPriv, c.body(nil)), c.field)
+		if err == nil || !strings.Contains(err.Error(), "not launched for a customer key") {
+			t.Errorf("%s HOST_DATA: the refusal must say the box was not launched for a customer key, got %v", name, err)
+		}
+	}
+}
+
+func TestDevHostDataNeedsCustomer(t *testing.T) {
+	setFlags(t, true, false, false, strings.Repeat("ab", 32))
+	if err := validateFlags(); err == nil || !strings.Contains(err.Error(), "-customer") {
+		t.Errorf("-dev-host-data without -customer must exit with a message naming -customer, got %v", err)
 	}
 }

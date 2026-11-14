@@ -127,3 +127,8 @@ func admit(box *boxState, open openMsg) error {
 	}
 	return nil
 }
+
+// Stubs for the review fixes (red step).
+func weakCustomerKey(pub []byte) bool { return false }
+
+func readyMessage(box *boxState) []byte { return []byte(`{"ok":true}`) }
