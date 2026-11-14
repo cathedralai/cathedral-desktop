@@ -86,7 +86,7 @@ function hostedProblems(src) {
   if (/\bhidden\b|\baria-hidden\b|\bstyle=/.test(tag)) problems.push('hidden or styled by attribute: ' + tag);
   const main = src.match(/<main[\s\S]*?<\/main>/)?.[0] || '';
   if (/id="hosted"/.test(main)) problems.push('#hosted is inside <main>, where #gone can cover it');
-  const css = src.match(/<style>([\s\S]*?)<\/style>/)?.[1] || '';
+  const css = [...src.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join('\n');
   const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }));
   const decl = (body, prop) => [...body.matchAll(new RegExp(`(?:^|;|\\s)${prop}\\s*:\\s*([^;]+)`, 'g'))].map((m) => m[1].trim().toLowerCase());
   const own = rules.filter((r) => r.sel.split(',').some((x) => /#hosted\b/.test(x)));
@@ -108,8 +108,10 @@ function hostedProblems(src) {
   if (!(z > goneZ)) problems.push(`#hosted z-index ${z} is not above #gone's ${goneZ}`);
   if (!decl(mine, 'overflow-wrap').some((v) => v === 'anywhere' || v === 'break-word')) problems.push('no wrap rule for a long origin');
   const script = src.slice(src.indexOf('<script type="module">'));
-  if ((script.match(/getElementById\('hosted'\)/g) || []).length !== 1) problems.push('the script touches #hosted other than to set its text');
-  if (/getElementById\('hosted'\)\.(hidden|style|remove|classList|setAttribute)/.test(script)) problems.push('the script changes #hosted');
+  // Every way the script can reach the element: getElementById or querySelector, either kind of quote.
+  const reach = /getElementById\(\s*['"]hosted['"]\s*\)|querySelector(?:All)?\(\s*['"][^'"]*#hosted\b[^'"]*['"]\s*\)/g;
+  if ((script.match(reach) || []).length !== 1) problems.push('the script touches #hosted other than to set its text');
+  if (new RegExp(`(?:${reach.source})\\s*\\.\\s*(?:hidden|style|remove|classList|setAttribute|replaceWith|innerHTML|outerHTML)`).test(script)) problems.push('the script changes #hosted');
   return problems;
 }
 check('the label is in the page, in view, wraps, and #gone cannot cover it', hostedProblems(html).length === 0, hostedProblems(html).join('; '));
@@ -126,6 +128,10 @@ for (const [name, bad, why] of [
   ['no wrap rule', mutate(hostedRule, hostedRule.replace(/overflow-wrap:[^;]*;/, '')), /wrap rule/],
   ['a hidden attribute', mutate('<div id="hosted"', '<div id="hosted" hidden'), /hidden/],
   ['the label inside <main>', mutate('<main>', '<main><div id="hosted"></div>'), /inside <main>/],
+  ['display:none in a second style block', mutate('</head>', '<style>#hosted { display: none; }</style></head>'), /display:none/],
+  ['a script that hides it with double quotes', mutate("getElementById('hosted').textContent", 'getElementById("hosted").hidden = true; document.getElementById(\'hosted\').textContent'), /#hosted/],
+  ['a script that hides it through querySelector', mutate("getElementById('hosted').textContent", "querySelector('#hosted').hidden = true; document.getElementById('hosted').textContent"), /#hosted/],
+  ['a script that hides it through querySelector with double quotes', mutate("getElementById('hosted').textContent", 'querySelector("#hosted").style.display = "none"; document.getElementById(\'hosted\').textContent'), /#hosted/],
   ['a script that hides it', mutate("getElementById('hosted').textContent", "getElementById('hosted').hidden = true; document.getElementById('hosted').textContent"), /hides it|changes #hosted/],
 ]) check(`the label check catches ${name}`, hostedProblems(bad).some((p) => why.test(p)), hostedProblems(bad).join('; '));
 const script = html.slice(html.indexOf('<script type="module">'));

@@ -5,16 +5,36 @@
 # install from before the pin was never checked. The script reads no environment variable.
 # Usage: bash tee/web/get-novnc.sh [version]
 set -euo pipefail
-V="${1:-1.6.0}"
-HERE="$(cd "$(dirname "$0")" && pwd)"
-TABLE="$HERE/novnc-sha256.txt"
 
-rm -rf "$HERE/core" "$HERE/vendor"
+# Find our own folder from the file we were started as, never from the working directory. Started any other way
+# (for example bash -s < get-novnc.sh) there is no folder to trust, so refuse before touching anything.
+SELF="${BASH_SOURCE[0]:-}"
+if [ -z "$SELF" ] || [ ! -f "$SELF" ]; then
+  echo "get-novnc: not started as a file (for example bash -s < get-novnc.sh); run: bash tee/web/get-novnc.sh" >&2
+  exit 1
+fi
+while [ -L "$SELF" ]; do
+  link_dir="$(cd "$(dirname "$SELF")" && pwd -P)"
+  SELF="$(readlink "$SELF")"
+  case "$SELF" in /*) ;; *) SELF="$link_dir/$SELF" ;; esac
+done
+HERE="$(cd "$(dirname "$SELF")" && pwd -P)"
+TABLE="$HERE/novnc-sha256.txt"
+if [ ! -f "$TABLE" ]; then
+  echo "get-novnc: no novnc-sha256.txt in ${HERE}; refusing to run from here" >&2
+  exit 1
+fi
+
+V="${1:-1.6.0}"
+WANT="$(awk -v v="$V" '$1 !~ /^#/ && $1 == v { print $2 }' "$TABLE")"
+
+# The folder and the table are trusted and the version and hash are settled: only now touch the old install.
+# It was never checked against a hash, so it goes, and it stays gone on any refusal or failure from here on.
 T=""
 cleanup() { status=$?; [ -n "$T" ] && rm -rf "$T"; [ "$status" -ne 0 ] && rm -rf "$HERE/core" "$HERE/vendor"; return "$status"; }
 trap cleanup EXIT
+rm -rf "$HERE/core" "$HERE/vendor"
 
-WANT="$(awk -v v="$V" '$1 !~ /^#/ && $1 == v { print $2 }' "$TABLE")"
 if ! [[ "$WANT" =~ ^[0-9a-f]{64}$ ]]; then
   echo "get-novnc: no sha256 for noVNC ${V} in ${TABLE}; refusing to download it" >&2
   exit 1

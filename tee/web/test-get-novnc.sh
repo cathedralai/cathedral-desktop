@@ -60,15 +60,41 @@ plant_old; run 9.9.9; rc=$?
 [ ! -e "$W/tee/web/core/stray.js" ] && [ ! -e "$W/tee/web/vendor/stray.js" ]; check "the right hash removes a stray file from the old install" $?
 [ -z "$(ls -A "$W/tmp")" ]; check "the right hash leaves no temp folder behind" $?
 
+# Where the script is found must not decide what it deletes. A symlink in another folder, or the text piped
+# into bash, must leave that folder's own core/ and vendor/ alone.
+OTHER="$W/other"; mkdir -p "$OTHER/core" "$OTHER/vendor"
+plant_other() { rm -rf "$OTHER/core" "$OTHER/vendor"; mkdir -p "$OTHER/core" "$OTHER/vendor"; echo keep > "$OTHER/core/keep.js"; echo keep > "$OTHER/vendor/keep.js"; }
+other_intact() { [ "$(cat "$OTHER/core/keep.js" 2>/dev/null)" = keep ] && [ "$(cat "$OTHER/vendor/keep.js" 2>/dev/null)" = keep ]; }
+cp "$W/tee/web/novnc-sha256.txt" "$OTHER/"
+ln -sf "$W/tee/web/get-novnc.sh" "$OTHER/get-novnc.sh"
+
+plant_other; rm -rf "$W/tee/web/core" "$W/tee/web/vendor"; : > "$FAKE_CURL_LOG"
+(cd "$OTHER" && TMPDIR="$W/tmp" PATH="$W/bin:$PATH" bash ./get-novnc.sh 9.9.9 >"$W/out" 2>&1); rc=$?
+other_intact; check "a symlink to the script in another folder deletes nothing there" $?
+[ "$rc" -eq 0 ] && [ -f "$W/tee/web/core/rfb.js" ]; check "a symlink is followed to the script's own folder, which gets the install" $?
+
+plant_other; : > "$FAKE_CURL_LOG"
+(cd "$OTHER" && TMPDIR="$W/tmp" PATH="$W/bin:$PATH" bash -s 9.9.9 < "$W/tee/web/get-novnc.sh" >"$W/out" 2>&1); rc=$?
+[ "$rc" -ne 0 ] && grep -q "not started as a file" "$W/out"; check "bash -s < get-novnc.sh is refused with the reason" $?
+other_intact; check "bash -s < get-novnc.sh deletes nothing in the folder it ran in" $?
+[ ! -s "$FAKE_CURL_LOG" ]; check "bash -s < get-novnc.sh downloads nothing" $?
+
+# A script copied to a folder with no table refuses, and deletes nothing there.
+NOTABLE="$W/notable"; mkdir -p "$NOTABLE/core" "$NOTABLE/vendor"; echo keep > "$NOTABLE/core/keep.js"; echo keep > "$NOTABLE/vendor/keep.js"
+cp "$W/tee/web/get-novnc.sh" "$NOTABLE/"
+(cd "$NOTABLE" && PATH="$W/bin:$PATH" bash ./get-novnc.sh 9.9.9 >"$W/out" 2>&1); rc=$?
+[ "$rc" -ne 0 ] && grep -q "no novnc-sha256.txt" "$W/out" && [ -f "$NOTABLE/core/keep.js" ] && [ -f "$NOTABLE/vendor/keep.js" ]; check "a folder with no table is refused and nothing is deleted there" $?
+
 # The production table pins the default version.
 awk '$1 !~ /^#/ && $1 == "1.6.0" && $2 ~ /^[0-9a-f]{64}$/ { ok=1 } END { exit !ok }' "$SRC/novnc-sha256.txt"; check "the real table has a sha256 for the default version 1.6.0" $?
 grep -q 'V="${1:-1.6.0}"' "$SRC/get-novnc.sh"; check "the default version is the pinned one" $?
 
 # The script reads no environment variable at all: every variable it uses it sets itself. This catches an
-# override of the hash or of the table path (${NOVNC_TABLE:-...}) alike. Documented environment: none.
+# override of the hash or of the table path (${NOVNC_TABLE:-...}) alike. Documented environment: none. BASH_SOURCE
+# is a shell builtin that holds the script's own path, not environment.
 assigned="$(grep -v '^[[:space:]]*#' "$SRC/get-novnc.sh" | grep -oE '(^|[;[:space:]{(])[A-Za-z_][A-Za-z0-9_]*=' | tr -d ' \t=;{(' | sort -u)"
 used="$(grep -v '^[[:space:]]*#' "$SRC/get-novnc.sh" | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*|awk -v [A-Za-z_]+|\$\{![A-Za-z_]+' | sed -E 's/^\$\{?//; s/^awk -v //' | sort -u)"
-foreign="$(comm -13 <(echo "$assigned") <(echo "$used"))"
+foreign="$(comm -13 <(printf '%s\nBASH_SOURCE\n' "$assigned" | sort -u) <(echo "$used"))"
 [ -z "$foreign" ]; check "the script reads no environment variable (found: ${foreign:-none})" $?
 ! grep -qE '\$\{[A-Za-z_]+:[-=?+]' "$SRC/get-novnc.sh"; check "the script has no \${NAME:-default} form that an environment variable could override" $?
 
