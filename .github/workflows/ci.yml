@@ -72,6 +72,8 @@ jobs:
         run: node tee/web/test-stream-verify.mjs
       - name: Page link rules
         run: node tee/web/test-link.mjs
+      - name: Customer wording guard
+        run: python tee/test_wording.py
 
   interop:
     needs: boxd
