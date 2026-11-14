@@ -13,8 +13,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-HEX64 = re.compile(r"^[0-9a-f]{64}$")
-HEX96 = re.compile(r"^[0-9a-f]{96}$")
+# fullmatch, not match with $: "$" also accepts a trailing newline, which would pass here and fail later.
+HEX64 = re.compile(r"[0-9a-f]{64}")
+HEX96 = re.compile(r"[0-9a-f]{96}")
+VMM_TYPES = ("QEMU", "ec2", "gce")
 INPUT_NAMES = ("firmware", "kernel", "initrd")
 REPORT_MEASUREMENT_OFFSET = 0x90  # SNP attestation report, MEASUREMENT field
 REPORT_MEASUREMENT_LEN = 48
@@ -78,8 +80,10 @@ def validate(m):
     if m.get("schema") != 1:
         raise ManifestError("schema must be 1")
     tool = m.get("tool")
-    if not isinstance(tool, dict) or tool.get("name") != "sev-snp-measure" or not isinstance(tool.get("version"), str):
-        raise ManifestError("tool must name sev-snp-measure and a version")
+    if not isinstance(tool, dict) or tool.get("name") != "sev-snp-measure":
+        raise ManifestError("tool must name sev-snp-measure")
+    if not isinstance(tool.get("version"), str) or not tool["version"]:
+        raise ManifestError("tool.version must be a non-empty version string")
     _only_keys(tool, ("name", "version", "mode"), "tool")
     if tool.get("mode") != "snp":
         raise ManifestError(f"tool.mode must be exactly \"snp\", got {tool.get('mode')!r}")
@@ -95,24 +99,29 @@ def validate(m):
         f = entry["file"]
         if "/" in f or "\\" in f or f in (".", ".."):
             raise ManifestError(f"inputs.{name}.file must be a bare file name, got {f!r}")
-        if not isinstance(entry.get("sha256"), str) or not HEX64.match(entry["sha256"]):
+        if not isinstance(entry.get("sha256"), str) or not HEX64.fullmatch(entry["sha256"]):
             raise ManifestError(f"inputs.{name}.sha256 must be 64 lowercase hex characters")
     if not isinstance(m.get("cmdline"), str) or not m["cmdline"]:
         raise ManifestError("cmdline must be the exact kernel command line string")
     launch = m.get("launch")
     if isinstance(launch, dict):
-        _only_keys(launch, ("vcpu_type", "kernel_hashes", "policy", "qemu", "memory_note"), "launch")
+        _only_keys(launch, ("vcpu_type", "kernel_hashes", "guest_features", "vmm_type", "policy", "qemu", "memory_note"), "launch")
     if not isinstance(launch, dict) or not isinstance(launch.get("vcpu_type"), str) or not launch["vcpu_type"]:
         raise ManifestError("launch.vcpu_type is required (the CPU model changes the measurement)")
     if launch.get("kernel_hashes") is not True:
         raise ManifestError("launch.kernel_hashes must be true (the tool always measures kernel, initrd and command line)")
+    # Both change the VMSA the tool measures, so they are recorded and passed on, never left to a default.
+    if not isinstance(launch.get("guest_features"), str) or not re.fullmatch(r"0x[0-9a-f]+", launch["guest_features"]):
+        raise ManifestError("launch.guest_features is required, as a hex string such as \"0x1\"")
+    if launch.get("vmm_type") not in VMM_TYPES:
+        raise ManifestError(f"launch.vmm_type is required, one of {', '.join(VMM_TYPES)}")
     expected = m.get("expected")
     if not isinstance(expected, dict) or not expected:
         raise ManifestError("expected must map each vCPU count to a fingerprint")
     for count, fp in expected.items():
-        if not re.match(r"^[1-9][0-9]*$", count):
+        if not re.fullmatch(r"[1-9][0-9]*", count):
             raise ManifestError(f"expected key {count!r} is not a vCPU count")
-        if not isinstance(fp, str) or not HEX96.match(fp):
+        if not isinstance(fp, str) or not HEX96.fullmatch(fp):
             raise ManifestError(f"expected[{count}] must be 96 lowercase hex characters")
 
 
@@ -143,6 +152,7 @@ def tool_command(m, inputs_dir, vcpus, tool_path="sev-snp-measure"):
     d = Path(inputs_dir)
     i = m["inputs"]
     return [tool_path, "--mode", "snp", "--vcpus", str(vcpus), "--vcpu-type", m["launch"]["vcpu_type"],
+            "--guest-features", m["launch"]["guest_features"], "--vmm-type", m["launch"]["vmm_type"],
             "--output-format", "hex", "--ovmf", str(d / i["firmware"]["file"]),
             "--kernel", str(d / i["kernel"]["file"]), "--initrd", str(d / i["initrd"]["file"]),
             "--append", m["cmdline"]]
@@ -151,7 +161,7 @@ def tool_command(m, inputs_dir, vcpus, tool_path="sev-snp-measure"):
 def compute_fingerprint(m, inputs_dir, vcpus, tool_path="sev-snp-measure"):
     r = subprocess.run(tool_command(m, inputs_dir, vcpus, tool_path), capture_output=True, text=True)
     out = r.stdout.strip()
-    if r.returncode != 0 or not HEX96.match(out):
+    if r.returncode != 0 or not HEX96.fullmatch(out):
         raise ManifestError(f"{tool_path} failed (exit {r.returncode}): {r.stderr.strip()[-300:]}")
     return out
 
@@ -159,6 +169,51 @@ def compute_fingerprint(m, inputs_dir, vcpus, tool_path="sev-snp-measure"):
 def tool_version(tool_path="sev-snp-measure"):
     r = subprocess.run([tool_path, "--version"], capture_output=True, text=True)
     return (r.stdout or r.stderr).strip().split()[-1] if r.returncode == 0 else ""
+
+
+def pinned_version(requirements_path):
+    """The sev-snp-measure version pinned in requirements.txt: what the control compares the tool with."""
+    for line in Path(requirements_path).read_text().splitlines():
+        m = re.match(r"sev-snp-measure==([0-9][0-9A-Za-z.]*)\b", line)
+        if m:
+            return m.group(1)
+    raise ManifestError(f"{requirements_path} does not pin sev-snp-measure")
+
+
+def verify_hash_list(list_path, base_dir):
+    """Check files against a sha256sum-style list ('hash  relative/path'). Returns [(path, status)] for
+    every file that is missing or differs; empty means the folder holds exactly those bytes."""
+    problems = []
+    base = Path(base_dir).resolve()
+    for n, line in enumerate(Path(list_path).read_text().splitlines(), 1):
+        m = re.fullmatch(r"([0-9a-f]{64})  ([A-Za-z0-9._/-]+)", line)
+        if not m or ".." in m.group(2).split("/") or m.group(2).startswith("/"):
+            raise ManifestError(f"{list_path}:{n}: not a 'sha256  relative/path' line")
+        p = base / m.group(2)
+        if not p.is_file():
+            problems.append((m.group(2), "missing"))
+        elif sha256_file(p) != m.group(1):
+            problems.append((m.group(2), "mismatch"))
+    return problems
+
+
+def verified_report(report_path, vcek_path, node="node"):
+    """MEASUREMENT and policy of a report whose signature verified, through verify-report.mjs (the
+    repository's own verifier: pinned AMD Genoa root, ASK, VCEK, then the report's ECDSA signature)."""
+    script = Path(__file__).resolve().parent / "verify-report.mjs"
+    try:
+        r = subprocess.run([node, str(script), str(report_path), str(vcek_path)], capture_output=True, text=True)
+    except OSError as e:
+        raise ManifestError(f"cannot run node for the report signature check: {e}")
+    try:
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        raise ManifestError(f"report check gave no result (exit {r.returncode}): {r.stderr.strip()[-200:]}")
+    if r.returncode != 0 or out.get("ok") is not True:
+        raise ManifestError(f"report {report_path} does not verify: {out.get('error', 'unknown')}")
+    if not HEX96.fullmatch(out.get("measurement", "")):
+        raise ManifestError("report check returned no measurement")
+    return out
 
 
 def report_measurement(path):
@@ -169,14 +224,15 @@ def report_measurement(path):
     return b[REPORT_MEASUREMENT_OFFSET:end].hex()
 
 
-def make_manifest(firmware, kernel, initrd, cmdline, vcpu_type, expected, version, note=""):
+def make_manifest(firmware, kernel, initrd, cmdline, vcpu_type, expected, version, note="",
+                  guest_features="0x1", vmm_type="QEMU"):
     """Build a manifest from real files; used by the control script, not by readers."""
     m = {"schema": 1, "description": note,
          "tool": {"name": "sev-snp-measure", "version": version, "mode": "snp"},
          "inputs": {n: {"file": Path(p).name, "sha256": sha256_file(p)}
                     for n, p in (("firmware", firmware), ("kernel", kernel), ("initrd", initrd))},
          "cmdline": cmdline,
-         "launch": {"vcpu_type": vcpu_type, "kernel_hashes": True},
+         "launch": {"vcpu_type": vcpu_type, "kernel_hashes": True, "guest_features": guest_features, "vmm_type": vmm_type},
          "expected": expected}
     validate(m)
     return m
@@ -192,6 +248,9 @@ def main(argv=None):
     s.add_argument("--tool", default="sev-snp-measure")
     s = sub.add_parser("check"); s.add_argument("manifest"); s.add_argument("inputs_dir"); s.add_argument("--tool", default="sev-snp-measure")
     s = sub.add_parser("report-measurement"); s.add_argument("report")
+    s = sub.add_parser("verified-report"); s.add_argument("report"); s.add_argument("vcek")
+    s = sub.add_parser("pinned-version"); s.add_argument("requirements")
+    s = sub.add_parser("verify-list"); s.add_argument("list"); s.add_argument("dir")
     s = sub.add_parser("make")
     for a in ("firmware", "kernel", "initrd", "vcpu-type", "vcpus", "expected", "version", "out"):
         s.add_argument("--" + a, required=True)
@@ -199,6 +258,8 @@ def main(argv=None):
     g.add_argument("--cmdline-file")
     g.add_argument("--dm-create-file")
     s.add_argument("--note", default="")
+    s.add_argument("--guest-features", default="0x1")
+    s.add_argument("--vmm-type", default="QEMU")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "validate":
@@ -214,12 +275,22 @@ def main(argv=None):
                 print(f"{n} {compute_fingerprint(m, a.inputs_dir, n, a.tool)}")
         elif a.cmd == "check":
             return run_check(a)
+        elif a.cmd == "verified-report":
+            r = verified_report(a.report, a.vcek)
+            print(r["measurement"], r["policy"])
+        elif a.cmd == "pinned-version":
+            print(pinned_version(a.requirements))
+        elif a.cmd == "verify-list":
+            bad = verify_hash_list(a.list, a.dir)
+            for path, status in bad:
+                print(f"{status.upper():8} {path}")
+            return 1 if bad else 0
         elif a.cmd == "report-measurement":
             print(report_measurement(a.report))
         elif a.cmd == "make":
             cmdline = read_cmdline_file(a.cmdline_file) if a.cmdline_file else cmdline_from_dm_file(a.dm_create_file)
             m = make_manifest(a.firmware, a.kernel, a.initrd, cmdline, a.vcpu_type,
-                              {a.vcpus: a.expected}, a.version, a.note)
+                              {a.vcpus: a.expected}, a.version, a.note, a.guest_features, a.vmm_type)
             Path(a.out).write_text(json.dumps(m, indent=2) + "\n")
     except ManifestError as e:
         print(f"error: {e}", file=sys.stderr)

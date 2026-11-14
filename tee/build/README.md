@@ -13,7 +13,8 @@ Needs Python 3.11 or newer (a pinned dependency needs it) and pypi.org once (the
 ```
 tee/build/measure/check.sh MANIFEST INPUTS_DIR
 tee/build/measure/expected-measurement.sh MANIFEST INPUTS_DIR [VCPUS]   # print only
-python3 -I -m unittest discover -s tee/build/measure                    # no inputs needed
+python3 -I -m unittest discover -s tee/build/measure                    # no inputs needed; the report
+                                                                         # signature tests also need node 22+
 ```
 
 `check.sh` fails (exit 1) unless all three hold:
@@ -27,8 +28,9 @@ Its files are the ones named under `inputs`; put them in one folder and pass tha
 ## Manifest
 
 Shape in `manifest.schema.json`, enforced by `measure/manifest.py`. It holds the three input files by
-hash, the exact kernel command line (which carries the dm-verity root hash), the CPU model, and one
-expected fingerprint per vCPU count.
+hash, the exact kernel command line (which carries the dm-verity root hash), the launch parameters
+that change the number (CPU model, `guest_features`, `vmm_type`; none is left to the tool's default),
+and one expected fingerprint per vCPU count.
 
 The parser is strict. `tool.mode` must be exactly `snp`. Any key the schema does not name is an
 error at every level, and so is a key that appears twice in one object, so a misspelled or doubled
@@ -46,28 +48,43 @@ command line: run 4 showed a per-box IP there gave each box its own measurement.
 
 ## Positive control
 
-`measure/test-control.sh` recomputes runs 4, 5, 6 and 7 from the saved c48 inputs and compares each
-with the value recorded in the notes. It needs the control folder (about 40 MB, not in this
-repository) named in `CATHEDRAL_CONTROL_DIR`, laid out like the blueprint2-tee notes. Unset, it prints
-SKIP and exits 0. A mismatch exits 1. Run 5 is also compared with the MEASUREMENT (offset 0x90) of
-its saved chip-signed report; run 4 takes its recorded value from its saved report. Runs 6 and 7
-have only values computed on c48, no chip report.
+`measure/test-control.sh` ties runs 4, 5, 6 and 7 on the c48 box to their saved chip reports. For each
+run it:
+1. verifies the report's signature offline with this repository's own verifier
+   (`tee/web/snp-verify.js`, through `measure/verify-report.mjs`): the AMD Genoa root pinned by hash,
+   the ASK, the run's VCEK, then the report's ECDSA P-384 signature. The policy must be 0x30000. Needs
+   node 22 or newer. REPORT_DATA binding is not checked; it is per box and not part of the measurement;
+2. checks that the MEASUREMENT of that verified report equals the value the notes recorded (run 4: the
+   12 character prefix the notes name; runs 5, 6, 7: `measurement.expected`);
+3. recomputes the fingerprint from the saved firmware, kernel, initrd and command line, and requires
+   it to equal the verified report's MEASUREMENT.
 
-Result on a Mac with `sev-snp-measure` 0.0.13: all four match, and run 5's chip report equals the
-computed value. Version 0.0.12 gives the same four values; 0.0.13 is pinned because the c48
-notes used it.
+It also shows that another `--guest-features` or `--vmm-type` value does not match, so neither can
+fall back to a default silently.
 
-## What is and is not reproducible yet
+The bundle (every file the control reads, about 37 MB: the c48 boot artifacts, the image 4 verity
+line, and the four runs' reports, VCEKs, command lines and recorded values) is not in this repository.
+It lives in the notes folder `~/Documents/INBOX/blueprint2-tee-20261104/` on Fred's Mac; ask Fred for
+a copy. `CATHEDRAL_CONTROL_DIR` names the folder, laid out like those notes. `measure/control-inputs.sha256`
+lists the sha256 of each file, and the control checks the bundle against it first, so a second person
+knows they hold the same bytes. Unset, the control prints SKIP and exits 0. A mismatch exits 1.
 
-- Measured and checked here: a published fingerprint can be recomputed from the three input files,
-  the command line and the launch parameters.
-- Not yet reproducible: the kernel, the initrd and the firmware are copies of files from c48 or
-  from an Ubuntu package. Their build recipes (pinned tarball hash, builder toolchain, initrd base,
-  firmware package hash) are the next step. A kernel rebuilt elsewhere may differ byte for byte.
-- The rootfs build (`tee/rootfs`) is reproducible on one host so far; a second host is untested.
-- A passing check proves the arithmetic from these files to this number. It does not prove the files
-  were built from source, and it does not prove a running box reports the number; that needs an
-  AMD host.
+Result on a Mac with `sev-snp-measure` 0.0.13: for all four runs the report signature verifies, the
+notes value equals it, and the computed fingerprint equals it. Version 0.0.12 gives the same four
+values; 0.0.13 is pinned because the c48 notes used it.
+
+## What is and is not in this repository
+
+- Here: the manifest format, the fingerprint and check scripts, the unit tests, and the control.
+- Not here yet: a reproducible build of the rootfs, kernel, initrd or firmware. The kernel (`62a3...`)
+  was built twice on one host (c48) with identical output, but no recipe is in this repository. The
+  kernel, initrd and firmware are copies of files from c48 or from an Ubuntu package. Their build recipes
+  (pinned tarball hash, builder toolchain, initrd base, firmware package hash) are the next step, and a
+  kernel rebuilt elsewhere may differ byte for byte. This repository's rootfs script does not pin a
+  snapshot or a build date either.
+- What a passing check proves: the arithmetic from these input files to this number, and that for runs
+  4 to 7 the number is the one the chip signed. It does not prove the files were built from source, and
+  it does not prove a new box reports the number; that needs an AMD host.
 
 ## Finding: the initrd holds more than it should
 

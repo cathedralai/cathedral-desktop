@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -14,6 +15,10 @@ import manifest as mf  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 EXAMPLE = HERE.parent / "manifests" / "run5-example.manifest.json"
+
+
+FIXTURES = HERE.parent.parent / "fixtures"
+REQUIREMENTS = HERE / "requirements.txt"
 
 
 def good():
@@ -143,6 +148,176 @@ class Command(unittest.TestCase):
                 mf.report_measurement(short)
 
 
+class LaunchParameters(unittest.TestCase):
+    """Every input that changes the number is recorded and passed explicitly, never left to the tool's default."""
+
+    def rejects(self, mutate, text):
+        m = good()
+        mutate(m)
+        with self.assertRaises(mf.ManifestError) as cm:
+            mf.validate(m)
+        self.assertIn(text, str(cm.exception))
+
+    def test_example_records_both(self):
+        self.assertEqual(good()["launch"]["guest_features"], "0x1")
+        self.assertEqual(good()["launch"]["vmm_type"], "QEMU")
+
+    def test_guest_features_is_required(self):
+        self.rejects(lambda m: m["launch"].pop("guest_features"), "guest_features")
+
+    def test_vmm_type_is_required(self):
+        self.rejects(lambda m: m["launch"].pop("vmm_type"), "vmm_type")
+
+    def test_guest_features_must_be_hex(self):
+        self.rejects(lambda m: m["launch"].update(guest_features="1"), "guest_features")
+        self.rejects(lambda m: m["launch"].update(guest_features="0x"), "guest_features")
+
+    def test_unknown_vmm_type_is_refused(self):
+        self.rejects(lambda m: m["launch"].update(vmm_type="XEN"), "vmm_type")
+
+    def test_command_passes_both_explicitly(self):
+        cmd = mf.tool_command(good(), "/in", 2)
+        self.assertEqual(cmd[cmd.index("--guest-features") + 1], "0x1")
+        self.assertEqual(cmd[cmd.index("--vmm-type") + 1], "QEMU")
+
+    def test_another_value_reaches_the_tool_and_changes_the_number(self):
+        with tempfile.TemporaryDirectory() as d:
+            tool = fake_tool(d)
+            base = mf.compute_fingerprint(good(), d, 2, tool)
+            m = good()
+            m["launch"]["guest_features"] = "0x3"
+            self.assertNotEqual(mf.compute_fingerprint(m, d, 2, tool), base)
+            m = good()
+            m["launch"]["vmm_type"] = "ec2"
+            self.assertNotEqual(mf.compute_fingerprint(m, d, 2, tool), base)
+
+
+class FullMatch(unittest.TestCase):
+    def rejects(self, mutate):
+        m = good()
+        mutate(m)
+        with self.assertRaises(mf.ManifestError):
+            mf.validate(m)
+
+    def test_input_hash_with_trailing_newline_is_refused(self):
+        self.rejects(lambda m: m["inputs"]["kernel"].update(sha256=m["inputs"]["kernel"]["sha256"] + "\n"))
+
+    def test_fingerprint_with_trailing_newline_is_refused(self):
+        self.rejects(lambda m: m.update(expected={"2": "0" * 96 + "\n"}))
+
+    def test_vcpu_count_with_trailing_newline_is_refused(self):
+        self.rejects(lambda m: m.update(expected={"2\n": "0" * 96}))
+
+    def test_tool_output_with_trailing_junk_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "junk.sh")
+            p.write_text("#!/bin/sh\necho " + "ab" * 48 + " extra\n")
+            p.chmod(p.stat().st_mode | stat.S_IXUSR)
+            with self.assertRaises(mf.ManifestError):
+                mf.compute_fingerprint(good(), d, 2, str(p))
+
+
+class ToolVersion(unittest.TestCase):
+    def test_empty_version_is_refused(self):
+        m = good()
+        m["tool"]["version"] = ""
+        with self.assertRaises(mf.ManifestError) as cm:
+            mf.validate(m)
+        self.assertIn("tool.version", str(cm.exception))
+
+    def test_pinned_version_is_read_from_requirements(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "requirements.txt")
+            p.write_text("# c\nfoo==1.0 \\\n    --hash=sha256:" + "0" * 64 + "\nsev-snp-measure==9.8.7 \\\n    --hash=sha256:" + "1" * 64 + "\n")
+            self.assertEqual(mf.pinned_version(p), "9.8.7")
+            p.write_text("foo==1.0\n")
+            with self.assertRaises(mf.ManifestError):
+                mf.pinned_version(p)
+
+    def test_example_manifest_pins_the_version_in_requirements(self):
+        self.assertEqual(good()["tool"]["version"], mf.pinned_version(REQUIREMENTS))
+
+
+class HashList(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        (self.dir / "sub").mkdir()
+        (self.dir / "a.bin").write_bytes(b"aaa")
+        (self.dir / "sub" / "b.bin").write_bytes(b"bbb")
+        self.list = self.dir / "list.sha256"
+        self.list.write_text("".join(f"{mf.sha256_file(self.dir / r)}  {r}\n" for r in ("a.bin", "sub/b.bin")))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_matching_bundle_passes(self):
+        self.assertEqual(mf.verify_hash_list(self.list, self.dir), [])
+
+    def test_changed_byte_is_reported(self):
+        (self.dir / "sub" / "b.bin").write_bytes(b"bbc")
+        self.assertEqual([(r, s) for r, s in mf.verify_hash_list(self.list, self.dir)], [("sub/b.bin", "mismatch")])
+
+    def test_missing_file_is_reported(self):
+        (self.dir / "a.bin").unlink()
+        self.assertEqual([(r, s) for r, s in mf.verify_hash_list(self.list, self.dir)], [("a.bin", "missing")])
+
+    def test_escaping_path_is_refused(self):
+        self.list.write_text(f"{'0' * 64}  ../x\n")
+        with self.assertRaises(mf.ManifestError):
+            mf.verify_hash_list(self.list, self.dir)
+
+    def test_committed_list_is_well_formed(self):
+        text = (HERE / "control-inputs.sha256").read_text().splitlines()
+        self.assertGreaterEqual(len(text), 18)
+        for line in text:
+            self.assertRegex(line, r"^[0-9a-f]{64}  [A-Za-z0-9._/-]+$")
+
+
+@unittest.skipUnless(shutil.which("node") or os.environ.get("REQUIRE_NODE"),
+                     "node is not installed (CI sets REQUIRE_NODE=1 so this cannot be skipped there)")
+class ReportSignature(unittest.TestCase):
+    """The control only counts a report's MEASUREMENT after the repository's verifier checks its signature."""
+
+    def verify(self, report_bytes):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "report.bin")
+            p.write_bytes(report_bytes)
+            return mf.verified_report(p, FIXTURES / "vcek.der")
+
+    def real(self):
+        return (FIXTURES / "report.bin").read_bytes()
+
+    def test_real_report_verifies_and_gives_measurement_and_policy(self):
+        r = self.verify(self.real())
+        self.assertEqual(r["measurement"], mf.report_measurement(FIXTURES / "report.bin"))
+        self.assertEqual(r["policy"], "0000000000030000")
+
+    def test_flipped_signature_byte_does_not_count(self):
+        b = bytearray(self.real())
+        b[0x2A0 + 5] ^= 0x01
+        with self.assertRaises(mf.ManifestError) as cm:
+            self.verify(bytes(b))
+        self.assertIn("signature", str(cm.exception))
+
+    def test_flipped_measurement_byte_does_not_count(self):
+        b = bytearray(self.real())
+        b[0x90] ^= 0x01
+        with self.assertRaises(mf.ManifestError):
+            self.verify(bytes(b))
+
+    def test_truncated_report_does_not_count(self):
+        with self.assertRaises(mf.ManifestError):
+            self.verify(self.real()[:0x2A0])
+
+    def test_unreadable_vcek_does_not_count(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "report.bin")
+            p.write_bytes(self.real())
+            with self.assertRaises(mf.ManifestError):
+                mf.verified_report(p, Path(d, "missing.der"))
+
+
 class Strict(unittest.TestCase):
     def rejects(self, mutate, text):
         m = good()
@@ -244,12 +419,11 @@ class CmdlineFile(unittest.TestCase):
 
 
 def fake_tool(d, name="fake-tool"):
-    """A stand-in for sev-snp-measure: the output depends on vCPU count and on the exact --append bytes."""
+    """A stand-in for sev-snp-measure: the output depends on every argument it is given."""
     p = Path(d, name)
     p.write_text("#!/bin/sh\n"
                  'if [ "$1" = "--version" ]; then echo "sev-snp-measure 0.0.13"; exit 0; fi\n'
-                 'while [ $# -gt 0 ]; do case "$1" in --vcpus) v="$2";; --append) a="$2";; esac; shift; done\n'
-                 "h=$(printf '%s|%s' \"$v\" \"$a\" | shasum -a 256 | cut -c1-64)\n"
+                 "h=$(printf '%s|' \"$@\" | shasum -a 256 | cut -c1-64)\n"
                  "echo \"${h}${h}\" | cut -c1-96\n")
     p.chmod(p.stat().st_mode | stat.S_IXUSR)
     return str(p)

@@ -3,53 +3,133 @@
   "title": "Launch fingerprint manifest",
   "description": "Everything the SEV-SNP launch fingerprint depends on, as hashes and parameters. measure/manifest.py enforces this shape with the standard library; this file documents it.",
   "type": "object",
-  "required": ["schema", "tool", "inputs", "cmdline", "launch", "expected"],
+  "required": [
+    "schema",
+    "tool",
+    "inputs",
+    "cmdline",
+    "launch",
+    "expected"
+  ],
   "additionalProperties": false,
   "properties": {
-    "schema": { "const": 1 },
-    "description": { "type": "string" },
+    "schema": {
+      "const": 1
+    },
+    "description": {
+      "type": "string"
+    },
     "tool": {
       "type": "object",
-      "required": ["name", "version"],
+      "required": [
+        "name",
+        "version",
+        "mode"
+      ],
       "properties": {
-        "name": { "const": "sev-snp-measure" },
-        "version": { "type": "string" },
-        "mode": { "const": "snp" }
-      }
+        "name": {
+          "const": "sev-snp-measure"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "const": "snp"
+        }
+      },
+      "additionalProperties": false
     },
     "inputs": {
       "type": "object",
-      "required": ["firmware", "kernel", "initrd"],
+      "required": [
+        "firmware",
+        "kernel",
+        "initrd"
+      ],
       "additionalProperties": false,
       "patternProperties": {
         "^(firmware|kernel|initrd)$": {
           "type": "object",
-          "required": ["file", "sha256"],
+          "required": [
+            "file",
+            "sha256"
+          ],
           "properties": {
-            "file": { "type": "string", "pattern": "^[^/\\\\]+$", "description": "Bare file name inside the inputs folder" },
-            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-            "source": { "type": "string", "description": "Free text: where the file came from" }
-          }
+            "file": {
+              "type": "string",
+              "pattern": "^[^/\\\\]+$",
+              "description": "Bare file name inside the inputs folder"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "source": {
+              "type": "string",
+              "description": "Free text: where the file came from"
+            }
+          },
+          "additionalProperties": false
         }
       }
     },
-    "cmdline": { "type": "string", "minLength": 1, "description": "Exact kernel command line, including the dm-mod.create verity line" },
+    "cmdline": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact kernel command line, including the dm-mod.create verity line"
+    },
     "launch": {
       "type": "object",
-      "required": ["vcpu_type", "kernel_hashes"],
+      "required": [
+        "vcpu_type",
+        "kernel_hashes",
+        "guest_features",
+        "vmm_type"
+      ],
       "properties": {
-        "vcpu_type": { "type": "string", "description": "QEMU -cpu model, for example EPYC-v4" },
-        "kernel_hashes": { "const": true },
-        "policy": { "type": "string" },
-        "qemu": { "type": "string" },
-        "memory_note": { "type": "string" }
-      }
+        "vcpu_type": {
+          "type": "string",
+          "description": "QEMU -cpu model, for example EPYC-v4"
+        },
+        "kernel_hashes": {
+          "const": true
+        },
+        "policy": {
+          "type": "string"
+        },
+        "qemu": {
+          "type": "string"
+        },
+        "memory_note": {
+          "type": "string"
+        },
+        "guest_features": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]+$",
+          "description": "sev-snp-measure --guest-features; changes the measured VMSA, so it is recorded and passed explicitly"
+        },
+        "vmm_type": {
+          "enum": [
+            "QEMU",
+            "ec2",
+            "gce"
+          ],
+          "description": "sev-snp-measure --vmm-type, passed explicitly"
+        }
+      },
+      "additionalProperties": false
     },
     "expected": {
       "type": "object",
       "minProperties": 1,
       "description": "One fingerprint per vCPU count. The measurement covers every vCPU, so each sold size has its own.",
-      "patternProperties": { "^[1-9][0-9]*$": { "type": "string", "pattern": "^[0-9a-f]{96}$" } },
+      "patternProperties": {
+        "^[1-9][0-9]*$": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{96}$"
+        }
+      },
       "additionalProperties": false
     }
   }
