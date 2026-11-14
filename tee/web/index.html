@@ -10,7 +10,7 @@
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; background: var(--bg); color: var(--body); font: 14px/1.4 Inter, system-ui, -apple-system, sans-serif; }
   body { display: grid; grid-template-rows: 44px 1fr auto; }
-  #hosted { padding: 6px 16px; background: var(--panel); border-top: 1px solid var(--line); color: var(--body); font: 12px/1.4 "JetBrains Mono", ui-monospace, monospace; }
+  #hosted { position: relative; z-index: 10; overflow-wrap: anywhere; padding: 6px 16px; background: var(--panel); border-top: 1px solid var(--line); color: var(--body); font: 12px/1.4 "JetBrains Mono", ui-monospace, monospace; }
   header { display: flex; align-items: center; gap: 14px; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
   .mark { color: var(--ink); font-weight: 600; } .mark span { color: var(--mute); font-weight: 400; }
   .chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; font: 12px/1 "JetBrains Mono", ui-monospace, monospace; color: var(--mute); }
@@ -40,7 +40,7 @@
     <p><code id="gone-detail"></code></p>
   </div>
 </main>
-<div id="hosted" role="note">Whoever serves this page can see your screen.</div>
+<div id="hosted" role="note">Whoever serves this page, even through a tunnel, can see your screen.</div>
 <script type="module">
   // Query: relay=ws(s)://host:port (websockify to the box's 8444), target=vnc|job, room=ID,
   //        fp=HEX[,HEX] allowed measurements (required: without it the page refuses unless nofp=1),
