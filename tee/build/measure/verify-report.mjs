@@ -17,7 +17,10 @@ try {
   const r = await verifySnp({
     report: read(process.argv[2]),
     certs: { ark: read(join(fx, 'amd-genoa-ark.der')), ask: read(join(fx, 'amd-genoa-ask.der')), vcek: read(process.argv[3]) },
+    // This script only checks the chain and the signature and prints the MEASUREMENT; the caller compares it
+    // with the computed fingerprint. So no list is given here, and the verifier is told so in plain terms.
     allowedMeasurements: [],
+    allowAnyMeasurement: true,
   });
   console.log(JSON.stringify({ ok: true, measurement: r.measurement, policy: r.policy }));
 } catch (e) {
