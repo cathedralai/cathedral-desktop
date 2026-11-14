@@ -314,5 +314,31 @@ except Exception as e:  # noqa: BLE001
     check("no customer key: message 2 is accepted with or without the member", False, f"{type(e).__name__}: {e}")
 check("the verifier result no longer claims a binding by itself", "customer_bound" not in verify(ark_der=ARK, allow_any_measurement=True))
 
+# The check path must read HOST_DATA through report_host_data. The report signature check is replaced inside this test (no hook in
+# product code) so a report with a customer's HOST_DATA, which the chip never signed, can reach the HOST_DATA comparison.
+_real_verified = ss._verified
+
+
+def _skip_report_signature(fn, message):
+    if message.startswith("report signature"):
+        return
+    return _real_verified(fn, message)
+
+
+def with_host_data(at, value):
+    b = bytearray(report)
+    b[at:at + 32] = value
+    return bytes(b)
+
+
+ss._verified = _skip_report_signature
+try:
+    r = verify(with_host_data(0xC0, GOOD), ark_der=ARK, customer_key=KEY, **LISTED)
+    check("HOST_DATA pin: the right value at 0xC0 passes the whole check path", r["ok"] is True, str(r))
+    refused("HOST_DATA pin: the right value at 0xE0 instead is refused as zero", lambda: verify(with_host_data(0xE0, GOOD), ark_der=ARK, customer_key=KEY, **LISTED), "HOST_DATA is zero")
+    refused("HOST_DATA pin: another key's value at 0xC0 is refused", lambda: verify(with_host_data(0xC0, bytes.fromhex(vec["other_customer"]["host_data_hex"])), ark_der=ARK, customer_key=KEY, **LISTED), "HOST_DATA does not match")
+finally:
+    ss._verified = _real_verified
+
 print("all checks passed" if not failures else f"{failures} failure(s)")
 sys.exit(1 if failures else 0)

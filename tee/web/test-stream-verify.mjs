@@ -138,5 +138,89 @@ try {
   check('no customer key: message 2 is accepted with or without the member', true);
 } catch (e) { check('no customer key: message 2 is accepted with or without the member', false, e.message); }
 
+// ---- review round 2 (AB#353): the marker check and the HOST_DATA call site, run through the real code with the report check replaced
+// inside this test only. Each case loads a temp copy of the product file with ONE import or call swapped for a test double; the
+// rest of the file is the product code as it is, so deleting checkReady(...) or re-inlining a slice in the product file fails here.
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
+const web = dirname(fileURLToPath(import.meta.url));
+const tmp = mkdtempSync(join(tmpdir(), 'wp2-'));
+const realSnp = pathToFileURL(join(web, 'snp-verify.js')).href;
+const swap = (src, from, to) => { if (!src.includes(from)) throw new Error(`test double target not found: ${from}`); return src.replace(from, to); };
+
+// (1) sealed-stream.js with verifySnp replaced by a double that returns a fixed attestation object.
+writeFileSync(join(tmp, 'snp-stub.mjs'), `export * from '${realSnp}'; export async function verifySnp() { return globalThis.__attestation; }`);
+writeFileSync(join(tmp, 'sealed-stream.mjs'), swap(readFileSync(join(web, 'sealed-stream.js'), 'utf8'), "from './snp-verify.js'", "from './snp-stub.mjs'"));
+const SS = await import(pathToFileURL(join(tmp, 'sealed-stream.mjs')).href);
+
+const subtle = globalThis.crypto.subtle;
+const cat = (...p) => { const o = new Uint8Array(p.reduce((n, x) => n + x.length, 0)); let i = 0; for (const x of p) { o.set(x, i); i += x.length; } return o; };
+const sha = async (b) => new Uint8Array(await subtle.digest('SHA-256', b));
+const hmacS = async (k, d) => new Uint8Array(await subtle.sign('HMAC', await subtle.importKey('raw', k, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), d));
+const hk2 = async (ck, ikm) => { const t = await hmacS(ck, ikm); const o1 = await hmacS(t, new Uint8Array([1])); return [o1, await hmacS(t, cat(o1, new Uint8Array([2])))]; };
+const dh = async (priv, pubRaw) => new Uint8Array(await subtle.deriveBits({ name: 'X25519', public: await subtle.importKey('raw', pubRaw, { name: 'X25519' }, false, []) }, priv, 256));
+
+// The box side: HELLO -> ATTEST, message 1 -> message 2 (given plaintext), then record anything else the client writes.
+async function playBox(ready) {
+  const stat = await subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
+  const spub = new Uint8Array(await subtle.exportKey('raw', stat.publicKey));
+  const att = { v: 1, static: enc(spub), report: enc(report), binding: JSON.stringify({ sealed_stream: { schema: 'sealed-stream/v1', x25519_public_b64: btoa(String.fromCharCode(...spub)) } }) };
+  const shared = { ok: true, measurement: 'ab'.repeat(48), testMode: false };
+  globalThis.__attestation = shared;
+  const extra = []; let n = 0; let chain = Promise.resolve();
+  const pipe = { onbytes: null, onclose: null, closed: false, close() { this.closed = true; this.onclose?.(); }, ready: Promise.resolve(),
+    send(b) { chain = chain.then(async () => {
+      n++;
+      if (n === 1) { pipe.onbytes?.(frame(att)); return; }
+      if (n > 2) { extra.push(b); return; }
+      const msg1 = b.slice(4);
+      const name = new TextEncoder().encode('Noise_NK_25519_AESGCM_SHA256');
+      let h = cat(name, new Uint8Array(32 - name.length)); let ck = h;
+      const mix = async (d) => { h = await sha(cat(h, d)); };
+      await mix(cat(new TextEncoder().encode('sealed-stream/v1'), await sha(report))); await mix(spub);
+      const re = msg1.slice(0, 32); await mix(re);
+      [ck] = await hk2(ck, await dh(stat.privateKey, re)); await mix(msg1.slice(32));
+      const e = await subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
+      const epub = new Uint8Array(await subtle.exportKey('raw', e.publicKey)); await mix(epub);
+      let k; [ck, k] = await hk2(ck, await dh(e.privateKey, re));
+      const ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv: new Uint8Array(12), additionalData: h }, await subtle.importKey('raw', k, { name: 'AES-GCM' }, false, ['encrypt']), new TextEncoder().encode(ready)));
+      { const body = cat(epub, ct); const out = new Uint8Array(4 + body.length); new DataView(out.buffer).setUint32(0, body.length); out.set(body, 4); pipe.onbytes?.(out); }
+    }); } };
+  return { pipe, extra, shared, settle: () => chain };
+}
+async function openWithMarker(ready) {
+  const box = await playBox(ready);
+  let result;
+  try { result = await SS.SealedStream.open({ pipe: box.pipe, target: 'job', ticket: goodTicket, verify: { certs, allowedMeasurements: [measurement], customerKey } }); }
+  catch (e) { result = e; }
+  await new Promise((r) => setTimeout(r, 50)); await box.settle();
+  return { result, ...box };
+}
+let m = await openWithMarker('{"ok":true,"mode":"customer"}');
+check('marker flow: message 2 with the marker gives a stream marked bound', !(m.result instanceof Error) && m.result.attestation?.customerBound === true, String(m.result?.message));
+m.result.close?.();
+m = await openWithMarker('{"ok":true}');
+check('marker flow: message 2 without the marker is refused with the named reason', m.result instanceof Error && /did not confirm customer mode/.test(m.result.message), String(m.result?.message));
+check('marker flow: nothing more is sent after the refusal', m.extra.length === 0, `${m.extra.length} frames`);
+check('marker flow: the pipe is closed at once', m.pipe.closed === true);
+check('marker flow: the bound flag is never set', m.shared.customerBound === undefined, JSON.stringify(m.shared));
+
+// (2) snp-verify.js with the report signature check replaced, so a report with a customer's HOST_DATA (never signed by a chip)
+// can reach the HOST_DATA comparison through verifySnp itself.
+writeFileSync(join(tmp, 'snp-nosig.mjs'), swap(readFileSync(join(web, 'snp-verify.js'), 'utf8'), 'await verifyReportSignature(rep, chain.vcekSpki)', 'true'));
+const NS = await import(pathToFileURL(join(tmp, 'snp-nosig.mjs')).href);
+const hdAt = (at, hexv) => { const b = report.slice(); b.set(Uint8Array.from(hexv.match(/../g), (x) => parseInt(x, 16)), at); return b; };
+const rb = { first: await sha(new TextEncoder().encode(bindingText)), second: null };
+const vopts = { certs, binding: rb, allowedMeasurements: [measurement], customerKey: vec.customer.public_key_b64u };
+try {
+  const r = await NS.verifySnp({ report: hdAt(0xC0, vec.customer.host_data_hex), ...vopts });
+  check('HOST_DATA pin: the right value at 0xC0 passes the whole check path', r.ok === true);
+} catch (e) { check('HOST_DATA pin: the right value at 0xC0 passes the whole check path', false, e.message); }
+try { await NS.verifySnp({ report: hdAt(0xE0, vec.customer.host_data_hex), ...vopts }); check('HOST_DATA pin: the right value at 0xE0 instead is refused as zero', false, 'accepted'); }
+catch (e) { check('HOST_DATA pin: the right value at 0xE0 instead is refused as zero', /HOST_DATA is zero/.test(e.message), e.message); }
+try { await NS.verifySnp({ report: hdAt(0xC0, vec.other_customer.host_data_hex), ...vopts }); check('HOST_DATA pin: another key\'s value at 0xC0 is refused', false, 'accepted'); }
+catch (e) { check('HOST_DATA pin: another key\'s value at 0xC0 is refused', /does not match/.test(e.message), e.message); }
+
 console.log(failures ? `${failures} failure(s)` : 'all checks passed');
 process.exit(failures ? 1 : 0);
