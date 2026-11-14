@@ -3,17 +3,21 @@
 Fails when customer-facing text uses a phrase from the "Not allowed" list in tee/PROMISE.md. It matches a fixed
 list of phrases (BANNED below); it does not catch every overclaim.
 
-Scope, exactly: Markdown (README.md and tee/**/*.md), the HTML of tee/web/*.html (tags dropped, inline script
-comments included) and the string literals of tee/web/*.js (comments in the .js files are not read).
+Scope, exactly: Markdown (README.md and tee/**/*.md), the HTML of tee/web/*.html (the text, the values of the
+title, alt, aria-label and placeholder attributes, and the inline script's comments; HTML comments are not read)
+and the string literals of tee/web/*.js (comments in the .js files are not read).
 Not scanned: desktop/web/index.html, the Python client's messages in tee/client, the box daemon's error
 strings in tee/boxd that the page prints, other code, and test files (test-*.mjs, test_*.py).
 
 Each file is normalised before matching, so a wrapped line, a doubled or non-breaking space, a Unicode hyphen,
-Markdown marks, HTML tags and entities, JS string concatenation and template expressions do not hide a phrase.
+a soft hyphen, Markdown marks, HTML tags and entities, JS string concatenation and template expressions do not
+hide a phrase. A list item, a table row or cell, a heading, a paragraph, a block-level HTML tag and a separate JS
+literal each end a sentence; a phrase never matches across that end.
 
-A place where a banned phrase is legitimately used goes in ALLOW below, with the rule it silences, the exact
-text it covers and a reason. An entry silences only that rule, only inside that text. An entry that no longer
-matches anything fails the run, so the list cannot rot.
+A place where a banned phrase is legitimately used goes in ALLOW below: the file, the rule it silences, the full
+text of the line (block) it is in, and a reason. An entry silences only that rule, on that one line, once. A
+second use of the phrase anywhere else in the file fails, and an entry that matches nothing fails, so the list
+cannot rot.
 """
 import html as htmllib
 import os
@@ -26,13 +30,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # (name, regex, why it is banned, optional regex the sentence of the hit must also match).
 # Matched case-insensitively against the normalised text of a file.
-CAPACITY = r"\b(?:pool|box|boxes|desktop|desktops|capacity|sealed)\b"
-SEEING = r"(?:see|view|watch|look at|peek at)"
+CAPACITY = r"\b(?:pool|pools|box|boxes|desktop|desktops|capacity|sealed|room|rooms|hotel|hotels)\b"
+SEEING = r"(?:see|read|view|watch|look|peek)"
 BANNED = [
-    ("proof", r"\bproofs?\b(?!(?:-| )of(?:-| )work)", "claims a proof; say what the check shows instead", None),
+    ("proof", r"\bproofs?\b(?!-of-work\b)", "claims a proof; say what the check shows instead", None),
     ("prove", r"\bprov(?:e|es|ed|en|ing|able|ably)\b", "claims a proof; say what the check shows instead", None),
     ("Cathedral-signed", r"cathedral[- ]signed", "the AMD chip vouches for reports (S9)", None),
-    ("no one can see", r"\b(?:no ?one|nobody|no-one) can " + SEEING + r"\b", "not true while Cathedral holds the ticket key (S6)", None),
+    # "read the frames" is the one honest use of the verb: the frames are encrypted to the box key (S4).
+    ("no one can see", r"\b(?:no ?one|nobody|no-one) can (?:see|read(?! the (?:encrypted )?frames\b)|view|watch|look|peek)\b", "not true while Cathedral holds the ticket key (S6)", None),
     ("not even Cathedral", r"\bnot even cathedral\b", "not true while Cathedral holds the ticket key (S6)", None),
     ("Cathedral cannot see", r"\bcathedral (?:cannot|can't|can not) " + SEEING + r"\b", "not true while Cathedral holds the ticket key (S6)", None),
     ("anyone can rebuild", r"\banyone can rebuild\b", "not before the second-host build passes", None),
@@ -41,24 +46,33 @@ BANNED = [
     ("unavailable", r"\bunavailable\b", "a busy sealed pool is \"sold out\"; banned in a sentence about capacity", CAPACITY),
 ]
 
-# (file relative to the repo root, rule name, exact normalised text it covers, reason). Short on purpose.
-# The "Not allowed" list in tee/PROMISE.md has to quote the banned claims to forbid them.
+# (file relative to the repo root, rule name, the full text of the one line it covers, reason).
+# Short on purpose. The "Not allowed" list in tee/PROMISE.md has to quote the banned claims to forbid them.
 _Q = "PROMISE.md quotes the banned phrase to forbid it"
+_L1 = ('"No one can see inside", "not even Cathedral", "Cathedral cannot see": not until all of these hold. '
+       'Customer mode is live in a listed build. A local client checks it. A firmware floor is set '
+       '(an owner decision, not yet made). Others can rebuild that build.')
+_L2 = 'Any "proof", "proves", "prove", "provable" or "provably" about the product.'
 ALLOW = [
-    ("tee/PROMISE.md", "no one can see", '"No one can see inside"', _Q),
-    ("tee/PROMISE.md", "not even Cathedral", '"not even Cathedral"', _Q),
-    ("tee/PROMISE.md", "Cathedral cannot see", '"Cathedral cannot see"', _Q),
-    ("tee/PROMISE.md", "proof", 'Any "proof", "proves", "prove", "provable" or "provably"', _Q),
-    ("tee/PROMISE.md", "prove", 'Any "proof", "proves", "prove", "provable" or "provably"', _Q),
-    ("tee/PROMISE.md", "Cathedral-signed", '"Cathedral-signed"', _Q),
-    ("tee/PROMISE.md", "anyone can rebuild", '"Anyone can rebuild"', _Q),
-    ("tee/PROMISE.md", "host cannot change the software", '"The host cannot change the software"', _Q),
+    ("tee/PROMISE.md", "no one can see", _L1, _Q),
+    ("tee/PROMISE.md", "not even Cathedral", _L1, _Q),
+    ("tee/PROMISE.md", "Cathedral cannot see", _L1, _Q),
+    ("tee/PROMISE.md", "proof", _L2, _Q),
+    ("tee/PROMISE.md", "prove", _L2, _Q),
+    ("tee/PROMISE.md", "Cathedral-signed", '"Cathedral-signed". The AMD chip vouches for reports (S9).', _Q),
+    ("tee/PROMISE.md", "anyone can rebuild", '"Anyone can rebuild": not before the second-host build passes.', _Q),
+    ("tee/PROMISE.md", "host cannot change the software", '"The host cannot change the software": not until P2 is closed.', _Q),
     ("tee/PROMISE.md", "only you can see", '"End-to-end encrypted so only you can see."', _Q),
-    ("tee/PROMISE.md", "unavailable", '"Unavailable" for a busy sealed pool', _Q),
+    ("tee/PROMISE.md", "unavailable", '"Unavailable" for a busy sealed pool. Say "sold out".', _Q),
 ]
 
-_HYPHENS = dict.fromkeys(map(ord, "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\u00ad\ufe58\ufe63\uff0d"), "-")
-_INVISIBLE = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"), None)
+SENT = "\x01"  # marks the end of a sentence-like block: list item, table row or cell, paragraph, block tag, JS literal
+_BLOCK_TAGS = {"p", "div", "li", "ul", "ol", "tr", "td", "th", "table", "thead", "tbody", "h1", "h2", "h3", "h4", "h5",
+               "h6", "br", "hr", "section", "article", "main", "header", "footer", "nav", "aside", "pre", "blockquote",
+               "dl", "dt", "dd", "figure", "figcaption", "form", "label", "button", "option", "select", "title"}
+
+_HYPHENS = dict.fromkeys(map(ord, "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d"), "-")
+_INVISIBLE = dict.fromkeys(map(ord, "\u00ad\u200b\u200c\u200d\u2060\ufeff"), None)
 
 
 def _js_unescape(lit):
@@ -72,7 +86,7 @@ def _js_unescape(lit):
 
 def js_strings(src):
     """The text of the string and template literals of JavaScript source. Literals joined by + become one
-    string; every other pair is separated by a newline. Template expressions drop out. Comments are skipped."""
+    string; every other pair is a separate block. Template expressions drop out. Comments are skipped."""
     parts, i, n, prev_end = [], 0, len(src), None
     while i < n:
         c = src[i]
@@ -97,19 +111,43 @@ def js_strings(src):
             prev_end = i = j + 1
         else:
             i += 1
-    return "\n".join(parts)
+    return SENT.join(parts)
+
+
+_TAG = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)((?:[^<>\"']|\"[^\"]*\"|'[^']*')*)>")
+_ATTR = re.compile(r"\b(?:title|alt|aria-label|placeholder)\s*=\s*(?:\"([^\"]*)\"|'([^']*)')", re.I)
 
 
 def _markup_text(text):
+    """Entities decoded; comments dropped; each tag becomes a space (a block boundary for block tags) and keeps
+    the values of its title, alt, aria-label and placeholder attributes, each as a block of its own."""
     text = htmllib.unescape(text)
-    text = re.sub(r"</?[A-Za-z][^>]*>|<!--.*?-->", "", text, flags=re.S)
-    return htmllib.unescape(text)
+    text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
+
+    def tag(m):
+        gap = SENT if m.group(2).lower() in _BLOCK_TAGS else " "
+        values = [a or b for a, b in _ATTR.findall(m.group(3))]
+        return gap + "".join(SENT + v + SENT for v in values) + gap
+    return htmllib.unescape(_TAG.sub(tag, text))
 
 
 def _markdown_text(text):
-    text = re.sub(r"^[ \t]*(?:>[ \t]*)+", "", text, flags=re.M)
-    text = re.sub(r"^[ \t]*(?:[-*+]|\d+\.)[ \t]+", "", text, flags=re.M)
-    return re.sub(r"[*_`~\[\]]", "", text)
+    """Plain text with SENT where a list item, heading, table row or cell, paragraph or code fence ends. A line
+    wrap inside one paragraph or one list item is only a space."""
+    out = []
+    for line in text.split("\n"):
+        if not line.strip():
+            out.append(SENT)
+            continue
+        line = re.sub(r"^[ \t]*(?:>[ \t]*)+", "", line)
+        if re.match(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", line):
+            out.append(SENT)
+            line = re.sub(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", "", line)
+        if re.match(r"^[ \t]*(?:#{1,6}[ \t]|```|~~~)", line) or re.match(r"^[ \t]*\|", line):
+            out.append(SENT)
+            line = line.replace("|", SENT) + SENT
+        out.append(re.sub(r"[*_`~\[\]]", "", line) + " ")
+    return "".join(out)
 
 
 def normalise(rel, text):
@@ -118,33 +156,44 @@ def normalise(rel, text):
         s = js_strings(text)
     elif rel.endswith(".html"):
         scripts = "\n".join(re.findall(r"<script[^>]*>(.*?)</script>", text, flags=re.S))
-        s = _markup_text(text) + "\n" + js_strings(scripts)
+        s = _markup_text(text) + SENT + js_strings(scripts)
     else:
         s = _markdown_text(_markup_text(text))
     s = unicodedata.normalize("NFKC", s).translate(_HYPHENS).translate(_INVISIBLE)
-    return " ".join(s.split())
+    return re.sub(r"(?: ?" + SENT + r" ?)+", " " + SENT + " ", " ".join(s.split())).strip()
 
 
 def _sentence(text, start, end):
-    a = max((m.end() for m in re.finditer(r"[.!?]\s", text[:start])), default=0)
-    m = re.search(r"[.!?](?:\s|$)", text[end:])
+    a = max([m.end() for m in re.finditer(r"[.!?]\s|" + SENT, text[:start])] or [0])
+    m = re.search(r"[.!?](?:\s|$)|" + SENT, text[end:])
     return text[a:end + (m.end() if m else len(text) - end)]
 
 
-def find_violations(rel, text, allow, used):
-    """[(file, offset in the normalised text, rule name, context)] for the hits that no allow entry covers."""
+def _block(text, start, end):
+    a = text.rfind(SENT, 0, start) + 1
+    b = text.find(SENT, end)
+    return a, (len(text) if b < 0 else b)
+
+
+def find_violations(rel, text, allow, claimed):
+    """[(file, offset in the normalised text, rule name, context)] for the hits that no allow entry covers.
+    `claimed` maps an allow-entry index to the one block it was used on; a second block is a violation."""
     norm = normalise(rel, text)
     found = []
     for name, rx, _why, only_in in BANNED:
         for m in re.finditer(rx, norm, re.I):
             if only_in and not re.search(only_in, _sentence(norm, m.start(), m.end()), re.I):
                 continue
-            covered = [k for k, (f, rule, sub, _r) in enumerate(allow) if f == rel and rule == name and any(
-                o.start() <= m.start() and m.end() <= o.end() for o in re.finditer(re.escape(normalise(rel, sub)), norm))]
-            if covered:
-                used.update(covered)
-            else:
-                found.append((rel, m.start(), name, norm[max(0, m.start() - 40):m.end() + 40]))
+            a, b = _block(norm, m.start(), m.end())
+            line = norm[a:b].strip()
+            ok = False
+            for k, (f, rule, full, _r) in enumerate(allow):
+                if f == rel and rule == name and line == normalise(rel, full).replace(SENT, "").strip():
+                    if claimed.setdefault(k, a) == a:
+                        ok = True
+                        break
+            if not ok:
+                found.append((rel, m.start(), name, norm[max(0, m.start() - 40):m.end() + 40].replace(SENT, " | ")))
     return found
 
 
@@ -164,7 +213,7 @@ def stale_allow(allow, used):
 
 
 def scan(root, allow):
-    used, found = set(), []
+    used, found = {}, []
     for rel in customer_files(root):
         with open(os.path.join(root, rel), encoding="utf-8") as fh:
             found += find_violations(rel, fh.read(), allow, used)
@@ -203,13 +252,13 @@ class GuardSelfTest(unittest.TestCase):
 
     def test_allow_listed_use_passes(self):
         root = self.tree({"README.md": "Never say: the pool is unavailable.\n"})
-        allow = [("README.md", "unavailable", "Never say: the pool is unavailable", "quoted as a banned phrase")]
+        allow = [("README.md", "unavailable", "Never say: the pool is unavailable.", "quoted as a banned phrase")]
         self.assertEqual(scan(root, allow), ([], []))
         self.assertEqual([h[2] for h in scan(root, [])[0]], ["unavailable"])
 
     def test_allow_entry_that_matches_nothing_fails(self):
         root = self.tree({"README.md": "Clean text.\n"})
-        allow = [("README.md", "unavailable", "old wording", "gone")]
+        allow = [("README.md", "unavailable", "old wording.", "gone")]
         _, stale = scan(root, allow)
         self.assertEqual(stale, allow)
 
@@ -237,6 +286,7 @@ class GuardSelfTest(unittest.TestCase):
 
     def test_phrase_with_html_tags(self):
         self.assertEqual(self.rules({"tee/web/p.html": "<p>no <b>one</b> can <i>see</i> it</p>\n"}), ["no one can see"])
+        self.assertEqual(self.rules({"tee/web/p.html": "<p>no one <b>can</b> see inside</p>\n"}), ["no one can see"])
 
     def test_phrase_with_html_entities(self):
         self.assertEqual(self.rules({"tee/web/p.html": "<p>no&nbsp;one can &lt;b&gt;see&lt;/b&gt; it</p>\n"}), ["no one can see"])
@@ -250,6 +300,19 @@ class GuardSelfTest(unittest.TestCase):
     def test_phrase_with_a_js_unicode_escape(self):
         self.assertEqual(self.rules({"tee/web/a.js": "const m = 'Cathedral\\u2011signed';\n"}), ["Cathedral-signed"])
 
+    def test_phrase_with_a_soft_hyphen_inside_a_word(self):
+        self.assertEqual(self.rules({"README.md": "It pro\u00adves it.\n"}), ["prove"])
+        self.assertEqual(self.rules({"README.md": "no\u00adone can see it.\n"}), ["no one can see"])
+
+    def test_phrase_in_each_html_attribute(self):
+        for attr in ("title", "alt", "aria-label", "placeholder"):
+            with self.subTest(attr=attr):
+                self.assertEqual(self.rules({"tee/web/p.html": f'<img {attr}="No one can see inside">\n'}), ["no one can see"])
+                self.assertEqual(self.rules({"tee/web/p.html": f"<input {attr}='This proves it'>\n"}), ["prove"])
+
+    def test_html_comments_and_other_attributes_are_not_read(self):
+        self.assertEqual(self.rules({"tee/web/p.html": '<!-- no one can see -->\n<div class="no one can see" data-x="proof">ok</div>\n'}), [])
+
     def test_provably_is_banned(self):
         self.assertEqual(self.rules({"README.md": "It is provably private.\n"}), ["prove"])
 
@@ -261,25 +324,76 @@ class GuardSelfTest(unittest.TestCase):
         self.assertIn(quoted, text)
         root = self.tree({"tee/PROMISE.md": text.replace(quoted, quoted + " This proves the box is private.", 1)})
         found, _ = scan(root, ALLOW)
-        self.assertEqual([h[2] for h in found], ["prove"])
+        # The edited line no longer equals the allowed line, so its quoted phrases fail too; the new claim is among them.
+        self.assertTrue(any(h[2] == "prove" and "proves the box is private" in h[3] for h in found), found)
 
     def test_allow_entry_does_not_silence_a_second_use_of_the_same_rule(self):
-        allow = [("README.md", "no one can see", '"no one can see inside"', "quoted")]
-        root = self.tree({"README.md": 'Never say "no one can see inside". Also no one can see it.\n'})
+        allow = [("README.md", "no one can see", 'Never say "no one can see inside".', "quoted")]
+        root = self.tree({"README.md": 'Never say "no one can see inside".\n\nAlso no one can see it.\n'})
         found, _ = scan(root, allow)
         self.assertEqual([h[2] for h in found], ["no one can see"])
+
+    # The verbs read and look are banned again; only the frames sentence (S4) is honest.
+    def test_cannot_read_and_cannot_look_are_banned(self):
+        for text, rule in (("Cathedral cannot read what you type.", "Cathedral cannot see"),
+                           ("No one can look inside the box.", "no one can see"),
+                           ("Nobody can read your screen.", "no one can see"),
+                           ("Cathedral cannot look at the desktop.", "Cathedral cannot see")):
+            with self.subTest(text=text):
+                self.assertEqual(self.rules({"README.md": text + "\n"}), [rule])
 
     # Honest text must pass.
     def test_honest_text_passes(self):
         for text in ("The AMD KDS was unavailable.", "It uses proof-of-work.", "Nobody can read the frames without the box key.",
-                     "The pool is sold out.", "A proof of work is not used here."):
+                     "The pool is sold out."):
             with self.subTest(text=text):
                 self.assertEqual(self.rules({"README.md": text + "\n"}), [])
+        self.assertEqual(self.rules({"tee/web/p.html": "<table><tr><td>pro</td><td>of</td></tr></table>\n"}), [])
+
+    def test_proof_of_work_exemption_is_the_hyphenated_term_only(self):
+        for text in ("Every receipt is proof of work done inside a sealed box.", "That is a proof of work."):
+            with self.subTest(text=text):
+                self.assertEqual(self.rules({"README.md": text + "\n"}), ["proof"])
 
     def test_unavailable_is_banned_about_capacity(self):
-        for text in ("The pool is unavailable.", "The sealed desktop is unavailable right now.", "Capacity is unavailable."):
+        for text in ("The pool is unavailable.", "The sealed desktop is unavailable right now.", "Capacity is unavailable.",
+                     "Rooms are unavailable right now.", "Hotels are unavailable.", "The hotel is unavailable."):
             with self.subTest(text=text):
                 self.assertEqual(self.rules({"README.md": text + "\n"}), ["unavailable"])
+
+    # A list item, a table row and a table cell each end a sentence; a hard wrap does not.
+    def test_a_list_item_ends_a_sentence(self):
+        self.assertEqual(self.rules({"README.md": "- Not until a key: no one\n- Can see the screen of a stopped box.\n"}), [])
+
+    def test_a_table_row_ends_a_sentence(self):
+        text = "| Path | Today |\n|---|---|\n| Pool | sealed pool |\n| KDS | AMD KDS: unavailable |\n"
+        self.assertEqual(self.rules({"README.md": text}), [])
+        self.assertEqual(self.rules({"README.md": "| A | no one |\n| can see | B |\n"}), [])
+
+    def test_a_table_cell_ends_a_sentence(self):
+        self.assertEqual(self.rules({"README.md": "| sealed pool | AMD KDS: unavailable |\n"}), [])
+        self.assertEqual(self.rules({"README.md": "| no one | can see |\n"}), [])
+
+    def test_a_banned_phrase_wrapped_inside_one_paragraph_or_item_still_fails(self):
+        self.assertEqual(self.rules({"README.md": "Today no one\ncan see the box.\n"}), ["no one can see"])
+        self.assertEqual(self.rules({"README.md": "- Today no one\n  can see the box.\n"}), ["no one can see"])
+        self.assertEqual(self.rules({"README.md": "> Today no one\n> can see the box.\n"}), ["no one can see"])
+
+    # An allow entry covers one line, once.
+    def test_a_second_use_of_an_allow_listed_phrase_fails(self):
+        with open(os.path.join(ROOT, "tee", "PROMISE.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        line = '- "Cathedral-signed". The AMD chip vouches for reports (S9).'
+        self.assertIn(line, text)
+        extra = 'Our reports are "Cathedral-signed".'
+        for name, changed in (("appended to the line", text.replace(line, line + " " + extra, 1)),
+                              ("as a paragraph at the end", text + "\n" + extra + "\n"),
+                              ("as a list item", text.replace(line, line + "\n- " + extra, 1)),
+                              ("in a table cell", text.replace("| P5 ", "| " + extra + " | P5 ", 1)),
+                              ("the allowed line repeated", text + "\n" + line + "\n")):
+            with self.subTest(name):
+                found, _ = scan(self.tree({"tee/PROMISE.md": changed}), ALLOW)
+                self.assertEqual(sorted({h[2] for h in found}), ["Cathedral-signed"])
 
 
 def promise_sentences():

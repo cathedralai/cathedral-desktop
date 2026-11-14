@@ -6,8 +6,9 @@ rest.
 
 `tee/test_wording.py` fails the build when these files use a phrase from the "Not allowed" list below. It does
 not catch every overclaim. It reads Markdown (`README.md` and `tee/**/*.md`), the HTML of `tee/web/*.html`
-(inline script comments included) and the string literals of `tee/web/*.js` (comments in the `.js` files are not
-read). It does not read `desktop/web/index.html`, the messages of the Python client in `tee/client`, or the
+(the text, the values of the `title`, `alt`, `aria-label` and `placeholder` attributes, and the inline script's
+comments; HTML comments are not read) and the string literals of `tee/web/*.js` (comments in the `.js` files are
+not read). It does not read `desktop/web/index.html`, the messages of the Python client in `tee/client`, or the
 error strings of the box daemon in `tee/boxd` that the page prints.
 
 ## Paths
@@ -32,7 +33,7 @@ error strings of the box daemon in `tee/boxd` that the page prints.
 | P16 Keys | The box keys are fresh at every boot. The ticket key is Cathedral's. There is no customer key. | Customer mode. |
 | P17 Uploaded code run under a ticket | Open in draft pull request 11. | Allow it only in customer mode. |
 
-Rows marked Closed hold where P2 is closed: QEMU with kernel hashes. On Cloud Hypervisor the host picks the command line, so P9 to P11 are open there.
+Rows marked Closed hold where P2 is closed: QEMU with kernel hashes. On Cloud Hypervisor the host picks the command line, so P5 and P9 to P11 are open there.
 
 ## Allowed sentences
 
