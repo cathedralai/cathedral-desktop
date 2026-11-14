@@ -5,7 +5,8 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { SealedStream } from './sealed-stream.js';
+import * as ss from './sealed-stream.js';
+const { SealedStream } = ss;
 
 const fx = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
 const read = (n) => new Uint8Array(readFileSync(join(fx, n)));
@@ -54,6 +55,61 @@ check('a floor the report meets: reaches attested', !!r.status, JSON.stringify(r
 
 r = await tryOpen({ allowedMeasurements: ['ff'.repeat(48)], allowAnyMeasurement: true });
 check('a list that does not match is refused even with the waiver', /not an allowed fingerprint/.test(r.error || ''), JSON.stringify(r));
+
+// ---- customer mode (AB#353 WP2)
+const vec = JSON.parse(readFileSync(join(fx, '..', 'testdata', 'customer_host_data_v1.json'), 'utf8'));
+const customerKey = vec.customer.public_key_b64u;
+
+// Like tryOpen, but counts what the client wrote and keeps the plaintext of message 1 (the Handshake is patched only to read it).
+// noReport: a box that presents no attestation report at all, which is what allowDev exists to accept.
+async function probe(verify, { noReport = false } = {}) {
+  const sent = []; const payloads = [];
+  const orig = ss.Handshake?.prototype.writeMessage1;
+  if (orig) ss.Handshake.prototype.writeMessage1 = function (p) { payloads.push(new TextDecoder().decode(p)); return orig.call(this, p); };
+  const att = noReport ? { static: enc(staticKey) } : { static: enc(staticKey), report: enc(report), binding: bindingText };
+  const pipe = { onbytes: null, onclose: null, close() { this.onclose?.(); }, ready: Promise.resolve(),
+    send(b) { sent.push(b); if (sent.length === 1) queueMicrotask(() => this.onbytes?.(frame(att))); } };
+  let status = null, error = null;
+  try {
+    await SealedStream.open({ pipe, target: 'job', verify: { certs, ...verify }, onstatus: (m) => { if (m.startsWith('attested') || m.startsWith('dev box')) { status = m; pipe.close(); } } });
+  } catch (e) { error = e.message; } finally { if (orig) ss.Handshake.prototype.writeMessage1 = orig; }
+  return { sent: sent.length, payloads, status, error };
+}
+const listed = { allowedMeasurements: [measurement] };
+
+let p = await probe({ ...listed, customerKey });
+check('customer key set, fixture HOST_DATA zero: refused with a named reason', /HOST_DATA.*zero/i.test(p.error || ''), JSON.stringify(p.error));
+check('a refused check sends nothing after HELLO and does not retry', p.sent === 1 && p.payloads.length === 0, `writes ${p.sent}, message 1 count ${p.payloads.length}`);
+// Reconnect after a reboot is a new open with a new report: the check runs again every time, nothing is cached from the first.
+const verifyOpts = { ...listed, customerKey };
+const again = [await probe(verifyOpts), await probe(verifyOpts)];
+check('a second open (reconnect) runs the customer check again', again.every((x) => /HOST_DATA/.test(x.error || '') && x.sent === 1), JSON.stringify(again.map((x) => x.error)));
+
+// Every waiver is refused in customer mode. allowDev skips verifySnp entirely today, so it is tested against a box with no report.
+p = await probe({ ...listed, allowDev: true, customerKey }, { noReport: true });
+check('customer key + allowDev, box with no report: refused by name, nothing sent after HELLO', /customer mode.*allowDev/i.test(p.error || '') && !p.status && p.payloads.length === 0, JSON.stringify(p));
+p = await probe({ ...listed, allowDev: true, customerKey });
+check('customer key + allowDev, box with a report: refused by name', /customer mode.*allowDev/i.test(p.error || '') && p.payloads.length === 0, JSON.stringify(p.error));
+p = await probe({ allowAnyMeasurement: true, customerKey });
+check('customer key + allowAnyMeasurement (what nofp=1 becomes on the page): refused by name', /customer mode.*allowAnyMeasurement/i.test(p.error || '') && p.payloads.length === 0, JSON.stringify(p.error));
+p = await probe({ allowedMeasurements: [], customerKey });
+check('customer key + empty fingerprint list: refused by name', /customer mode.*fingerprint list/i.test(p.error || '') && p.payloads.length === 0, JSON.stringify(p.error));
+
+p = await probe({ allowAnyMeasurement: true });
+check('no customer key: reaches attested as on main', !!p.status, JSON.stringify(p));
+check('no customer key: message 1 is exactly {"target","ticket"}, no customer field', p.payloads.length === 1 && p.payloads[0] === '{"target":"job","ticket":""}', JSON.stringify(p.payloads));
+p = await probe({ allowDev: true }, { noReport: true });
+check('no customer key: allowDev still accepts a dev box, as on main', /dev box/.test(p.status || ''), JSON.stringify(p));
+
+try {
+  check('message 1 payload with a key adds only the customer field', ss.message1Payload('job', 'T', customerKey) === `{"target":"job","ticket":"T","customer":"${customerKey}"}`);
+  check('message 1 payload without a key is byte for byte the old one', ss.message1Payload('job', 'T') === JSON.stringify({ target: 'job', ticket: 'T' }));
+} catch (e) { check('message 1 payload', false, e.message); }
+
+for (const [label, bad] of [['empty string', ''], ['not base64url', '!'.repeat(43)], ['31 bytes', Buffer.alloc(31).toString('base64url')], ['33 bytes', Buffer.alloc(33).toString('base64url')]]) {
+  p = await probe({ ...listed, customerKey: bad });
+  check(`customer key ${label}: usage error before anything is written`, /^invalid customer key/.test(p.error || '') && p.sent === 0, `${p.error} writes ${p.sent}`);
+}
 
 console.log(failures ? `${failures} failure(s)` : 'all checks passed');
 process.exit(failures ? 1 : 0);

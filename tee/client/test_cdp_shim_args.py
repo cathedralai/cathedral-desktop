@@ -48,5 +48,30 @@ for extra in (["--measurement", "ab" * 48], ["--allow-any-measurement"]):
     except subprocess.TimeoutExpired:
         check(f"{extra[0]} is accepted at start", True, "still running when the timeout hit")
 
+# ---- customer mode (AB#353 WP2): --customer-key refuses every waiver, by name, before the shim listens.
+KEY = "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"  # public test vector, tee/testdata/customer_host_data_v1.json
+FP = ["--measurement", "ab" * 48]
+for label, extra, words in (("--allow-any-measurement", [*FP, "--allow-any-measurement"], ("customer mode", "--allow-any-measurement")),
+                            ("--allow-dev", [*FP, "--allow-dev"], ("customer mode", "--allow-dev")),
+                            ("no --measurement", [], ("customer mode", "--measurement"))):
+    try:
+        r = shim("--customer-key", KEY, *extra)
+        check(f"--customer-key with {label}: exits non-zero and names the reason", r.returncode != 0 and all(w in r.stderr for w in words), r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "no message")
+        check(f"--customer-key with {label}: never starts listening", "listening" not in r.stderr)
+    except subprocess.TimeoutExpired:
+        check(f"--customer-key with {label}: exits non-zero and names the reason", False, "the shim kept running")
+for label, bad in (("empty", ""), ("not base64url", "!" * 43)):
+    try:
+        r = shim("--customer-key", bad, *FP)
+        check(f"--customer-key that is {label}: exits non-zero with a message", r.returncode != 0 and "invalid customer key" in r.stderr, r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "no message")
+    except subprocess.TimeoutExpired:
+        check(f"--customer-key that is {label}: exits non-zero with a message", False, "the shim kept running")
+try:
+    shim("--customer-key", KEY, *FP)
+    check("--customer-key with a fingerprint list is accepted at start", False, "exited")
+except subprocess.TimeoutExpired:
+    check("--customer-key with a fingerprint list is accepted at start", True, "still running when the timeout hit")
+
+
 print("all checks passed" if not failures else f"{failures} failure(s)")
 sys.exit(1 if failures else 0)

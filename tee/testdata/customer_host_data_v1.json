@@ -1,0 +1,24 @@
+{
+  "_note": "Fixed public test keys (RFC 8032 section 7.1 tests 1 and 2). No private key is held here. HOST_DATA = sha256(domain || public key), domain ends in one zero byte. Read by the JS, Python and (WP3) Go tests. unlabelled_sha256_of_key is sha256(public key) with no domain: it must be refused.",
+  "domain_ascii": "cathedral-tee-customer/v1",
+  "domain_hex": "63617468656472616c2d7465652d637573746f6d65722f763100",
+  "customer": {
+    "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "public_key_b64u": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+    "preimage_hex": "63617468656472616c2d7465652d637573746f6d65722f763100d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "host_data_hex": "e95d10623726d36740bf5f28149229bd166ee3f117ae6c81329ece95b7788d7e"
+  },
+  "other_customer": {
+    "public_key_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+    "public_key_b64u": "PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw",
+    "preimage_hex": "63617468656472616c2d7465652d637573746f6d65722f7631003d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+    "host_data_hex": "81bd88016d925b0b367a956e01f9e65beeec1158aa230355566f08b631e94397"
+  },
+  "without_trailing_zero": {
+    "preimage_hex": "63617468656472616c2d7465652d637573746f6d65722f7631d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "host_data_hex": "6d37fe10263aea89004029fe48dc3a46871e75438a75274ccfcd1e4c3a0d0810"
+  },
+  "unlabelled_sha256_of_key": {
+    "host_data_hex": "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+  }
+}
