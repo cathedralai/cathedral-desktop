@@ -207,6 +207,7 @@ async def main():
     finally:
         box.kill()
     await tickets()
+    await customer_box()
     print("all checks passed" if not failures else f"{failures} failure(s)")
     sys.exit(1 if failures else 0)
 
@@ -291,6 +292,112 @@ async def tickets():
             s.close()
         finally:
             box.kill()
+
+
+async def raw_open(port, ticket, customer, target="job"):
+    """A raw test client for boxd customer mode: no verification at all, so it can talk to a -dev box and put any
+    customer field in message 1. The real clients refuse such a box in customer mode; this one exists to test the box."""
+    r, w = await asyncio.open_connection("127.0.0.1", port)
+    write_frame(w, json.dumps({"v": 1}).encode())
+    await w.drain()
+    att = json.loads(await read_frame(r))
+    rs = sealed_stream.b64u_decode(att["static"])
+    hs = sealed_stream.Handshake(sealed_stream.PROLOGUE + sealed_stream.hashlib.sha256(b"").digest(), rs)
+    body = {"target": target, "ticket": ticket}
+    if customer is not None:
+        body["customer"] = customer
+    write_frame(w, hs.write_message1(json.dumps(body).encode()))
+    await w.drain()
+    ready = json.loads(hs.read_message2(await read_frame(r)))
+    if not ready.get("ok"):
+        w.close()
+        return att, ready, None
+    send, recv = hs.split()
+    return att, ready, sealed_stream.Stream(r, w, send, recv, {"ok": False, "dev": True})
+
+
+def start_box(*args, ports):
+    box = subprocess.Popen([BOXD, "-dev", *args, "-tls", f"127.0.0.1:{ports[0]}", "-stream", f"127.0.0.1:{ports[1]}"], stderr=subprocess.PIPE, text=True)
+    lines = []
+    for line in box.stderr:
+        lines.append(line.strip())
+        if "LISTEN" in line:
+            break
+    return box, lines
+
+
+async def customer_box():
+    """boxd -dev -customer: only the customer key opens it. Uses a raw test client; the real clients must still refuse a dev box."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    raw = lambda k: k.public_key().public_bytes(sealed_stream.serialization.Encoding.Raw, sealed_stream.serialization.PublicFormat.Raw)  # noqa: E731
+    cust, other = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
+    field, other_field = mint_ticket.b64u(raw(cust)), mint_ticket.b64u(raw(other))
+    with tempfile.TemporaryDirectory() as tmp:
+        cath_path = os.path.join(tmp, "ticket.key")
+        subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "mint_ticket.py"), "keygen", "--out", cath_path], check=True, capture_output=True)
+        cath = mint_ticket.load_key(cath_path)
+        hd = sealed_stream.customer_host_data(raw(cust)).hex()
+        box, _ = start_box("-customer", "-dev-host-data", hd, "-ticket-key", os.path.join(tmp, "ticket.pub"), ports=(28643, 28644))
+        try:
+            static = await mint_ticket.box_static_key("127.0.0.1", 28644)
+            tk = lambda key, **kw: mint_ticket.issue(key, box_static=static, target="job", **kw)  # noqa: E731
+            att, ready, s = await raw_open(28644, tk(cust), field)
+            check("customer mode: a dev box says so in ATTEST, as today", att.get("dev") is True and not att.get("report"), str(sorted(att)))
+            check("customer mode: the customer key opens the box", ready.get("ok") is True and s is not None, str(ready))
+            if s:
+                await s.send(b"JOB 1\n")
+                check("customer mode: the opened stream works", (await s.recv()).decode() == "DONE 1 42\n")
+                s.close()
+            replay = tk(cust)
+            _, ready, s = await raw_open(28644, replay, field)
+            s and s.close()
+            _, again, _ = await raw_open(28644, replay, field)
+            check("customer mode: a replayed ticket is refused", again.get("ok") is False, str(again))
+            _, ready, _ = await raw_open(28644, tk(cath), field)
+            check("customer mode: Cathedral's ticket key is not consulted", ready.get("ok") is False, str(ready))
+            _, ready, _ = await raw_open(28644, tk(other), other_field)
+            check("customer mode: another key is refused (its hash is not the box's HOST_DATA)", ready.get("ok") is False, str(ready))
+            _, ready, _ = await raw_open(28644, tk(other), field)
+            check("customer mode: another key's ticket with the right customer field is refused", ready.get("ok") is False, str(ready))
+            _, ready, _ = await raw_open(28644, "", field)
+            check("customer mode: an empty ticket is refused", ready.get("ok") is False, str(ready))
+            _, ready, _ = await raw_open(28644, tk(cust), None)
+            check("customer mode: a missing customer field is refused and names customer mode", ready.get("ok") is False and "customer mode" in str(ready.get("error")), str(ready))
+            _, ready, _ = await raw_open(28644, tk(cust), mint_ticket.b64u(raw(cust)[:31]))
+            check("customer mode: a 31-byte customer field is refused", ready.get("ok") is False, str(ready))
+
+            # The real clients keep refusing a dev box in customer mode, and refuse the waiver that would let them through.
+            r, w = await asyncio.open_connection("127.0.0.1", 28644)
+            try:
+                await open_stream(r, w, target="job", verify=Verify(customer_key=field, allowed_measurements=["ab" * 48]), ticket=tk(cust))
+                check("customer mode: the Python client refuses a dev box", False, "opened")
+            except RuntimeError as e:
+                check("customer mode: the Python client refuses a dev box", "no attestation" in str(e), str(e))
+            w.close()
+            try:
+                Verify(customer_key=field, allowed_measurements=["ab" * 48], allow_dev=True)
+                check("customer mode: allow_dev cannot be combined with a customer key", False, "built")
+            except ValueError as e:
+                check("customer mode: allow_dev cannot be combined with a customer key", "allow_dev" in str(e), str(e))
+        finally:
+            box.kill()
+
+        # No HOST_DATA at all: one clear line at start, and every stream refused.
+        box, lines = start_box("-customer", ports=(28743, 28744))
+        try:
+            says = [x for x in lines if "CUSTOMER" in x]
+            check("customer mode without HOST_DATA logs one clear line at start", len(says) == 1 and "refuses every stream" in says[0], str(lines))
+            static = await mint_ticket.box_static_key("127.0.0.1", 28744)
+            _, ready, _ = await raw_open(28744, mint_ticket.issue(cust, box_static=static, target="job"), field)
+            check("customer mode without HOST_DATA refuses every stream", ready.get("ok") is False, str(ready))
+        finally:
+            box.kill()
+
+        hexval = "ab" * 32
+        for label, args, words in (("-customer with -noticket", ["-dev", "-customer", "-noticket"], ("-customer", "-noticket")),
+                                   ("-dev-host-data without -dev", ["-dev-host-data", hexval], ("-dev-host-data", "-dev"))):
+            r = subprocess.run([BOXD, *args], capture_output=True, text=True, timeout=10)
+            check(f"{label} exits non-zero and names both flags", r.returncode != 0 and all(x in r.stderr for x in words), r.stderr.strip()[-120:])
 
 
 asyncio.run(main())

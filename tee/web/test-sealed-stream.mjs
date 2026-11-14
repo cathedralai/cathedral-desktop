@@ -78,6 +78,25 @@ try {
   s.close();
 } catch (e) { check('noVNC adapter', false, e.message); }
 
+// boxd -dev -customer: the browser client must keep refusing a dev box in customer mode, and refuse the waiver that would let it in.
+{
+  const cbox = spawn(boxd, ['-dev', '-customer', '-dev-host-data', 'ab'.repeat(32), '-tls', '127.0.0.1:18543', '-stream', '127.0.0.1:18544'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  try {
+    await new Promise((res, rej) => { cbox.stderr.on('data', (d) => { if (/LISTEN/.test(d.toString())) res(); }); cbox.on('exit', (c) => rej(new Error(`boxd exited ${c}`))); setTimeout(() => rej(new Error('boxd did not listen')), 5000); });
+    const key = Buffer.alloc(32, 7).toString('base64url');
+    for (const [label, verify, re] of [
+      ['a dev box', { customerKey: key, allowedMeasurements: ['ab'.repeat(48)] }, /no attestation/],
+      ['allowDev', { customerKey: key, allowedMeasurements: ['ab'.repeat(48)], allowDev: true }, /customer mode.*allowDev/],
+      ['allowAnyMeasurement', { customerKey: key, allowAnyMeasurement: true }, /customer mode.*allowAnyMeasurement/]]) {
+      const pipe = tcpPipe(18544); await pipe.ready;
+      try { await SealedStream.open({ pipe, target: 'job', verify }); check(`customer mode: browser client refuses ${label}`, false, 'opened'); }
+      catch (e) { check(`customer mode: browser client refuses ${label}`, re.test(e.message), e.message); }
+      pipe.close();
+    }
+  } catch (e) { check('customer mode box', false, e.message); }
+  cbox.kill();
+}
+
 box.kill();
 console.log(failures ? `${failures} failure(s)` : 'all checks passed');
 process.exit(failures ? 1 : 0);

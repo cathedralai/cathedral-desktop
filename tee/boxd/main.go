@@ -172,6 +172,9 @@ type boxState struct {
 	ticketPub []byte
 	binding   []byte
 	seen      *seenTickets
+	// Customer mode (AB#353 WP3): the box opens only for the key whose hash it was launched with.
+	customer bool
+	hostData []byte
 }
 
 // ---- AB#361 line protocol (unchanged behaviour)
@@ -210,8 +213,9 @@ type attestMsg struct {
 }
 
 type openMsg struct {
-	Target string `json:"target"`
-	Ticket string `json:"ticket"`
+	Target   string `json:"target"`
+	Ticket   string `json:"ticket"`
+	Customer string `json:"customer,omitempty"`
 }
 
 func serveStream(c net.Conn, box *boxState) {
