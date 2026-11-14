@@ -67,6 +67,10 @@ var (
 
 func main() {
 	flag.Parse()
+	if err := validateFlags(); err != nil {
+		fmt.Fprintln(os.Stderr, "boxd: "+err.Error())
+		fail(err)
+	}
 	if *flagDev {
 		if *flagTLSAddr == ":8443" {
 			*flagTLSAddr = "127.0.0.1:8443"
@@ -134,6 +138,20 @@ func main() {
 	}
 	if *flagNoTicket {
 		console("NOTICKET")
+	}
+	if *flagCustomer {
+		// There is no fallback: a box that cannot name its HOST_DATA, or whose HOST_DATA is zero, refuses every stream.
+		box.customer = true
+		hd, err := hostDataFor(box.report, *flagDev, *flagDevHostData)
+		switch {
+		case err != nil:
+			console("CUSTOMER refuses every stream: " + err.Error())
+		case bytes.Equal(hd, make([]byte, hostDataLen)):
+			console("CUSTOMER refuses every stream: HOST_DATA is zero, so this box was not launched for a customer key")
+		default:
+			box.hostData = hd
+			console("CUSTOMER HOST_DATA " + hex.EncodeToString(hd))
+		}
 	}
 
 	cfg := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: tlsKey}}}
@@ -266,9 +284,14 @@ func serveStream(c net.Conn, box *boxState) {
 		writeFrame(c, []byte(`{"error":"unknown target"}`))
 		return
 	}
-	if !ticketOK(box, open) {
+	if err := admit(box, open); err != nil {
 		// Still complete the handshake so the client gets an authenticated refusal.
-		msg2, _ := hs.writeMessage2([]byte(`{"ok":false,"error":"ticket refused"}`))
+		// Field order and bytes match the old refusal exactly: {"ok":false,"error":"ticket refused"}.
+		refusal, _ := json.Marshal(struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+		}{false, err.Error()})
+		msg2, _ := hs.writeMessage2(refusal)
 		writeFrame(c, msg2)
 		return
 	}
