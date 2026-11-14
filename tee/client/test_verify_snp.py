@@ -250,5 +250,69 @@ check("no customer key: same result as before, including fixtures with zero HOST
 check("Verify has no customer key by default", getattr(Verify(), "customer_key", "missing") is None)
 check("no customer key: allow_dev and allow_any_measurement still build as on main", Verify(allow_dev=True, allow_any_measurement=True).allow_dev)
 
+# ---- review fixes (AB#353): weak customer keys, ticket under the customer key, HOST_DATA offset.
+weak = vec["weak_keys"]["small_order_hex"] + vec["weak_keys"]["non_canonical_hex"]
+check("vector: 8 small-order encodings are listed", len(vec["weak_keys"]["small_order_hex"]) == 8)
+for h in weak:
+    wk = b64u(bytes.fromhex(h))
+    refused(f"weak customer key {h[:8]}..{h[-4:]}: usage error", lambda wk=wk: ss.parse_customer_key(wk), "invalid customer key")
+    refused(f"weak customer key {h[:8]}..{h[-4:]}: Verify refuses it when built", lambda wk=wk: Verify(customer_key=wk, **LISTED), "invalid customer key")
+    refused(f"weak customer key {h[:8]}..{h[-4:]}: the pure check refuses it", lambda h=h: ss.check_customer_host_data(GOOD, bytes.fromhex(h)), "invalid customer key")
+try:
+    ss.parse_customer_key(KEY)
+    check("a real customer key is still accepted", True)
+except Exception as e:  # noqa: BLE001
+    check("a real customer key is still accepted", False, f"{type(e).__name__}: {e}")
+
+# HOST_DATA is bytes 0xC0 to 0xDF. A synthetic buffer whose neighbours differ, so a wrong offset cannot pass.
+buf = bytearray(0x2A0 + 144)
+buf[0xA0:0xC0] = b"\x11" * 32
+buf[0xC0:0xE0] = b"\x22" * 32
+buf[0xE0:0x100] = b"\x33" * 32
+try:
+    check("report_host_data reads bytes 0xC0 to 0xDF", ss.report_host_data(bytes(buf)) == b"\x22" * 32)
+except Exception as e:  # noqa: BLE001
+    check("report_host_data reads bytes 0xC0 to 0xDF", False, f"{type(e).__name__}: {e}")
+
+# The ticket the client sends in customer mode: present, and signed by the customer key.
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
+from cryptography.hazmat.primitives import serialization as _ser  # noqa: E402
+
+ck, ok_ = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
+raw_pub = ck.public_key().public_bytes(_ser.Encoding.Raw, _ser.PublicFormat.Raw)
+
+
+def mk(priv, body=b'{"box":"x","target":"vnc"}'):
+    return f"{b64u(body)}.{b64u(priv.sign(body))}"
+
+
+try:
+    ss.check_customer_ticket(mk(ck), raw_pub)
+    check("ticket signed by the customer key is accepted", True)
+except Exception as e:  # noqa: BLE001
+    check("ticket signed by the customer key is accepted", False, f"{type(e).__name__}: {e}")
+refused("empty ticket in customer mode: refused by name", lambda: ss.check_customer_ticket("", raw_pub), "customer mode needs a ticket")
+refused("ticket signed by another key: usage error", lambda: ss.check_customer_ticket(mk(ok_), raw_pub), "signed by the customer key")
+good_t = mk(ck)
+refused("ticket with a changed body: refused", lambda: ss.check_customer_ticket(b64u(b'{"box":"y"}') + "." + good_t.split(".")[1], raw_pub), "signed by the customer key")
+for bad in ("abc", "a.b.c", "!!.??", "AAAA.AAAA"):
+    refused(f"malformed ticket {bad!r}: refused", lambda bad=bad: ss.check_customer_ticket(bad, raw_pub), "customer mode")
+
+# Message 2 must carry the marker; only then may a stream be called bound to the customer's key.
+try:
+    ss.check_ready({"ok": True, "mode": "customer"}, KEY)
+    check("message 2 with mode customer and a customer key: accepted", True)
+except Exception as e:  # noqa: BLE001
+    check("message 2 with mode customer and a customer key: accepted", False, f"{type(e).__name__}: {e}")
+for label, ready in (("no marker", {"ok": True}), ("another mode", {"ok": True, "mode": "cathedral"}), ("a non-string mode", {"ok": True, "mode": ["customer"]})):
+    refused(f"customer key, message 2 with {label}: refused with a named reason", lambda ready=ready: ss.check_ready(ready, KEY), "did not confirm customer mode")
+try:
+    ss.check_ready({"ok": True}, None)
+    ss.check_ready({"ok": True, "mode": "customer"}, None)
+    check("no customer key: message 2 is accepted with or without the member", True)
+except Exception as e:  # noqa: BLE001
+    check("no customer key: message 2 is accepted with or without the member", False, f"{type(e).__name__}: {e}")
+check("the verifier result no longer claims a binding by itself", "customer_bound" not in verify(ark_der=ARK, allow_any_measurement=True))
+
 print("all checks passed" if not failures else f"{failures} failure(s)")
 sys.exit(1 if failures else 0)

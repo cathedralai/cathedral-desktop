@@ -37,7 +37,11 @@ async def customer_mode():
     rd = lambda n: open(os.path.join(FX, n), "rb").read()  # noqa: E731
     with open(os.path.join(FX, "..", "testdata", "customer_host_data_v1.json")) as f:
         vec = json.load(f)
-    key = vec["customer"]["public_key_b64u"]
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    ckey = Ed25519PrivateKey.generate()
+    key = mint_ticket.b64u(ckey.public_key().public_bytes(sealed_stream.serialization.Encoding.Raw, sealed_stream.serialization.PublicFormat.Raw))
+    good_ticket = mint_ticket.issue(ckey, box_static=b"\0" * 32, target="job")
+    other_ticket = mint_ticket.issue(Ed25519PrivateKey.generate(), box_static=b"\0" * 32, target="job")
     binding = rd("binding.json").decode()
     b64u = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()  # noqa: E731
     static = base64.b64decode(json.loads(binding)["sealed_stream"]["x25519_public_b64"])
@@ -48,7 +52,7 @@ async def customer_mode():
     kw = dict(ark_der=rd("amd-genoa-ark.der"), ask_der=rd("amd-genoa-ask.der"), vcek_der=rd("vcek.der"))
     listed = {"allowed_measurements": [measurement]}
 
-    async def run(att=att_full, vkw=None, mint=None, tamper=None):
+    async def run(att=att_full, vkw=None, mint=None, tamper=None, ticket=None):
         """One connection to a fake box. Returns (error, frames the client wrote, plaintexts of message 1)."""
         got, payloads = [], []
 
@@ -78,7 +82,8 @@ async def customer_mode():
                 v = Verify(**kw, **(vkw or {}))
                 if tamper:
                     tamper(v)
-                await open_stream(r, w, target="job", verify=v, mint=mint)
+                tk = ticket if ticket is not None else (good_ticket if v.customer_key is not None and mint is None else "")
+                await open_stream(r, w, target="job", verify=v, mint=mint, ticket=tk)
             except Exception as e:  # noqa: BLE001
                 err = f"{type(e).__name__}: {e}"
             w.close()
@@ -106,6 +111,11 @@ async def customer_mode():
     check("customer key + allow_any_measurement: refused by name", "customer mode" in (err or "") and "allow_any_measurement" in (err or "") and not payloads, str(err))
     err, got, payloads = await run(vkw={"customer_key": key, **listed}, tamper=lambda v: setattr(v, "allowed_measurements", []))
     check("customer key + empty fingerprint list: refused by name", "customer mode needs a fingerprint list" in (err or "") and not payloads, str(err))
+
+    err, got, payloads = await run(vkw={"customer_key": key, **listed}, ticket="")
+    check("customer key + empty ticket: refused by name before anything is written", "customer mode needs a ticket" in (err or "") and not got, f"{err} frames {len(got)}")
+    err, got, payloads = await run(vkw={"customer_key": key, **listed}, ticket=other_ticket)
+    check("customer key + ticket signed by another key: usage error before anything is written", "signed by the customer key" in (err or "") and not got, f"{err} frames {len(got)}")
 
     # mint(rs) runs only after the report is verified: a failing report mints nothing and sends nothing after HELLO.
     minted = []

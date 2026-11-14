@@ -58,11 +58,18 @@ check('a list that does not match is refused even with the waiver', /not an allo
 
 // ---- customer mode (AB#353 WP2)
 const vec = JSON.parse(readFileSync(join(fx, '..', 'testdata', 'customer_host_data_v1.json'), 'utf8'));
-const customerKey = vec.customer.public_key_b64u;
+// A customer key pair made here: the client checks that the ticket is signed by the customer key before it sends anything.
+const kp = await globalThis.crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+const kpOther = await globalThis.crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+const b64uOf = (u8) => Buffer.from(u8).toString('base64url');
+const customerKey = b64uOf(new Uint8Array(await globalThis.crypto.subtle.exportKey('raw', kp.publicKey)));
+const ticketBy = async (pair) => { const bb = new TextEncoder().encode('{"box":"x","target":"job"}'); return `${b64uOf(bb)}.${b64uOf(new Uint8Array(await globalThis.crypto.subtle.sign('Ed25519', pair.privateKey, bb)))}`; };
+const goodTicket = await ticketBy(kp);
 
 // Like tryOpen, but counts what the client wrote and keeps the plaintext of message 1 (the Handshake is patched only to read it).
 // noReport: a box that presents no attestation report at all, which is what allowDev exists to accept.
-async function probe(verify, { noReport = false } = {}) {
+async function probe(verify, { noReport = false, ticket } = {}) {
+  ticket ??= verify.customerKey === undefined ? '' : goodTicket;
   const sent = []; const payloads = [];
   const orig = ss.Handshake?.prototype.writeMessage1;
   if (orig) ss.Handshake.prototype.writeMessage1 = function (p) { payloads.push(new TextDecoder().decode(p)); return orig.call(this, p); };
@@ -71,7 +78,7 @@ async function probe(verify, { noReport = false } = {}) {
     send(b) { sent.push(b); if (sent.length === 1) queueMicrotask(() => this.onbytes?.(frame(att))); } };
   let status = null, error = null;
   try {
-    await SealedStream.open({ pipe, target: 'job', verify: { certs, ...verify }, onstatus: (m) => { if (m.startsWith('attested') || m.startsWith('dev box')) { status = m; pipe.close(); } } });
+    await SealedStream.open({ pipe, target: 'job', ticket, verify: { certs, ...verify }, onstatus: (m) => { if (m.startsWith('attested') || m.startsWith('dev box')) { status = m; pipe.close(); } } });
   } catch (e) { error = e.message; } finally { if (orig) ss.Handshake.prototype.writeMessage1 = orig; }
   return { sent: sent.length, payloads, status, error };
 }
@@ -110,6 +117,26 @@ for (const [label, bad] of [['empty string', ''], ['not base64url', '!'.repeat(4
   p = await probe({ ...listed, customerKey: bad });
   check(`customer key ${label}: usage error before anything is written`, /^invalid customer key/.test(p.error || '') && p.sent === 0, `${p.error} writes ${p.sent}`);
 }
+
+// ---- review fixes (AB#353)
+p = await probe({ ...listed, customerKey }, { ticket: '' });
+check('customer key + empty ticket: refused by name before anything is written', /customer mode needs a ticket/.test(p.error || '') && p.sent === 0, JSON.stringify(p));
+p = await probe({ ...listed, customerKey }, { ticket: await ticketBy(kpOther) });
+check('customer key + ticket signed by another key: usage error before anything is written', /signed by the customer key/.test(p.error || '') && p.sent === 0, JSON.stringify(p));
+
+// The box has to say, inside its authenticated answer, that it is in customer mode. checkReady is that decision.
+try {
+  ss.checkReady({ ok: true, mode: 'customer' }, customerKey);
+  check('message 2 with mode customer and a customer key: accepted', true);
+} catch (e) { check('message 2 with mode customer and a customer key: accepted', false, e.message); }
+for (const [label, ready] of [['no marker', { ok: true }], ['another mode', { ok: true, mode: 'cathedral' }], ['a non-string mode', { ok: true, mode: ['customer'] }]]) {
+  try { ss.checkReady(ready, customerKey); check(`customer key, message 2 with ${label}: refused`, false, 'accepted'); }
+  catch (e) { check(`customer key, message 2 with ${label}: refused with a named reason`, /did not confirm customer mode/.test(e.message), e.message); }
+}
+try {
+  ss.checkReady({ ok: true }, undefined); ss.checkReady({ ok: true, mode: 'customer' }, undefined);
+  check('no customer key: message 2 is accepted with or without the member', true);
+} catch (e) { check('no customer key: message 2 is accepted with or without the member', false, e.message); }
 
 console.log(failures ? `${failures} failure(s)` : 'all checks passed');
 process.exit(failures ? 1 : 0);

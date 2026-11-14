@@ -27,6 +27,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -88,18 +89,66 @@ def parse_customer_key(s) -> bytes:
     raw = b64u_decode(s)
     if len(raw) != 32 or base64.urlsafe_b64encode(raw).rstrip(b"=").decode() != s:
         raise ValueError("invalid customer key: not a canonical encoding of 32 bytes")
+    if _is_weak_ed25519_point(raw):
+        raise ValueError("invalid customer key: a small-order or non-canonical Ed25519 point cannot be a customer key")
     return raw
+
+
+# The 8 points of order dividing 8 have these y values (little-endian bytes for the two of order 8). With y >= 2^255-19 the
+# encoding is non-canonical. The sign bit is ignored here, so a small-order point is caught whichever sign it is written with.
+_ED_P = (1 << 255) - 19
+_WEAK_Y = {0, 1, _ED_P - 1,
+           int.from_bytes(bytes.fromhex("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"), "little"),
+           int.from_bytes(bytes.fromhex("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"), "little")}
+
+
+def _is_weak_ed25519_point(raw: bytes) -> bool:
+    y = int.from_bytes(raw, "little") & ((1 << 255) - 1)
+    return y >= _ED_P or y in _WEAK_Y
+
+
+def check_customer_ticket(ticket: str, pub: bytes) -> None:
+    """The ticket a customer-mode client sends: present, and signed by the customer key. Checked before anything is sent."""
+    if not isinstance(ticket, str) or ticket == "":
+        raise ValueError("customer mode needs a ticket signed by the customer key")
+    bad = ValueError("customer mode needs a ticket signed by the customer key: this ticket is not")
+    parts = ticket.split(".")
+    if len(parts) != 2:
+        raise bad
+    try:
+        body, sig = b64u_decode(parts[0]), b64u_decode(parts[1])
+        if len(sig) != 64:
+            raise bad
+        Ed25519PublicKey.from_public_bytes(pub).verify(sig, body)
+    except (InvalidSignature, ValueError, TypeError):
+        raise bad from None
+
+
+def check_ready(ready: dict, customer_key: str | None) -> None:
+    """Message 2 for a client with a customer key must carry mode "customer"; a client without one ignores the member."""
+    if customer_key is not None and ready.get("mode") != "customer":
+        raise RuntimeError("the box did not confirm customer mode")
+
+
+HOST_DATA_OFFSET = 0xC0
+
+
+def report_host_data(report: bytes) -> bytes:
+    """HOST_DATA, the 32 bytes the host chose at launch: bytes 0xC0 to 0xDF of the report."""
+    return bytes(report[HOST_DATA_OFFSET:HOST_DATA_OFFSET + 32])
 
 
 def customer_host_data(pub: bytes) -> bytes:
     if not isinstance(pub, (bytes, bytearray)) or len(pub) != 32:
         raise ValueError("invalid customer key: expected 32 raw bytes")
+    if _is_weak_ed25519_point(bytes(pub)):
+        raise ValueError("invalid customer key: a small-order or non-canonical Ed25519 point cannot be a customer key")
     return hashlib.sha256(CUSTOMER_DOMAIN + bytes(pub)).digest()
 
 
 def check_customer_host_data(host_data: bytes, pub: bytes) -> None:
     """Pure check on raw bytes; the comparison covers all 32 bytes in constant time."""
-    want = customer_host_data(pub)
+    want = customer_host_data(pub)  # also refuses a weak key
     if len(host_data) != 32:
         raise ValueError(f"HOST_DATA is {len(host_data)} bytes, expected 32")
     if host_data == bytes(32):
@@ -241,11 +290,8 @@ def verify_snp(report: bytes, static_pub: bytes, binding: str, v: Verify) -> dic
     if v.allowed_measurements and measurement not in v.allowed_measurements:
         raise ValueError(f"MEASUREMENT {measurement[:16]} is not an allowed fingerprint")
     if customer_pub is not None:
-        check_customer_host_data(report[0xC0:0xE0], customer_pub)
-    result = {"ok": True, "test_mode": not v.allowed_measurements, "measurement": measurement, "chip_id": chip, "version": int.from_bytes(report[:4], "little")}
-    if customer_pub is not None:
-        result["customer_bound"] = True
-    return result
+        check_customer_host_data(report_host_data(report), customer_pub)
+    return {"ok": True, "test_mode": not v.allowed_measurements, "measurement": measurement, "chip_id": chip, "version": int.from_bytes(report[:4], "little")}
 
 
 # ---- Noise NK
@@ -382,7 +428,9 @@ async def open_stream(r: asyncio.StreamReader, w: asyncio.StreamWriter, target: 
     cannot be reused across connections (``mint_ticket.minter``).
     """
     # Usage errors and waivers in customer mode are refused before any byte is written; the fields can be set after Verify was built.
-    check_customer_options(verify)
+    customer_pub = check_customer_options(verify)
+    if customer_pub is not None and mint is None:
+        check_customer_ticket(ticket, customer_pub)  # a ticket given up front is checked before HELLO
     write_frame(w, json.dumps({"v": 1}).encode())
     await w.drain()
     att = json.loads(await read_frame(r))
@@ -403,11 +451,21 @@ async def open_stream(r: asyncio.StreamReader, w: asyncio.StreamWriter, target: 
     # A ticket is minted only for a box whose report passed: a refused box gets nothing.
     if mint is not None:
         ticket = mint(rs)
+        if customer_pub is not None:
+            check_customer_ticket(ticket, customer_pub)
     hs = Handshake(PROLOGUE + hashlib.sha256(report).digest(), rs)
     write_frame(w, hs.write_message1(message1_payload(target, ticket, verify.customer_key)))
     await w.drain()
     ready = json.loads(hs.read_message2(await read_frame(r)))
     if not ready.get("ok"):
         raise RuntimeError(f"box refused: {ready.get('error')}")
+    # Only a box that says, inside this authenticated answer, that it is in customer mode may be called bound to the customer's key.
+    try:
+        check_ready(ready, verify.customer_key)
+    except RuntimeError:
+        w.close()
+        raise
+    if verify.customer_key is not None:
+        attestation["customer_bound"] = True
     send, recv = hs.split()
     return Stream(r, w, send, recv, attestation)
