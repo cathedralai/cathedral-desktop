@@ -65,6 +65,10 @@ class Verify:
     min_tcb: dict[str, int] | None = None
     tls_spki: bytes | None = None
 
+    def __post_init__(self):
+        # Same forms as the page: trimmed and lower-cased, then exactly 96 hex characters.
+        self.allowed_measurements = [_normalize_measurement(m) for m in self.allowed_measurements]
+
 
 # AMD's chip certificate carries the firmware numbers it was issued for in these extensions; the value is
 # an OCTET STRING holding a DER INTEGER. The part names are the ones the KDS URL uses.
@@ -82,6 +86,26 @@ def _cert_tcb(cert: x509.Certificate, part: str, oid: str) -> int:
     return int.from_bytes(raw[2:], "big")
 
 
+def _normalize_measurement(m: str) -> str:
+    n = str(m).strip().lower()
+    if len(n) != 96 or any(c not in "0123456789abcdef" for c in n):
+        raise ValueError("invalid fingerprint: expected 96 hex characters")
+    return n
+
+
+def _check_tcb_floor(floor) -> None:
+    """The floor is a dict of the four part names, each an integer 0 to 255; a part left out is not checked."""
+    if floor is None:
+        return
+    if not isinstance(floor, dict):
+        raise ValueError("invalid TCB floor: expected an object with parts bl, tee, snp, ucode")
+    for k, v in floor.items():
+        if k not in {p for p, _, _ in _TCB_PARTS}:
+            raise ValueError(f'invalid TCB floor: unknown part "{k}"')
+        if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 255:
+            raise ValueError(f"invalid TCB floor: part {k} must be an integer from 0 to 255")
+
+
 def _kds(url: str, cache: str) -> bytes:
     os.makedirs(cache, exist_ok=True)
     p = os.path.join(cache, hashlib.sha256(url.encode()).hexdigest())
@@ -94,6 +118,7 @@ def _kds(url: str, cache: str) -> bytes:
 
 
 def verify_snp(report: bytes, static_pub: bytes, binding: str, v: Verify) -> dict:
+    _check_tcb_floor(v.min_tcb)
     if len(report) < 0x2A0 + 144:
         raise ValueError("report too short")
     # Before any signature work: a guest that allows debugging or migration can be read or moved by the

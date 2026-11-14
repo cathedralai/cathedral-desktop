@@ -172,7 +172,30 @@ export async function verifyReportSignature(report, vcekSpki) {
  * only to learn a build's fingerprint; the result then says testMode, not a pass. `minTcb` is an optional
  * floor on the reported firmware, `{ bl, tee, snp, ucode }`, any part may be left out.
  */
+const TCB_PARTS = ['bl', 'tee', 'snp', 'ucode'];
+
+/** The floor is an object of the four part names, each an integer 0 to 255; a part left out is not checked. */
+function checkTcbFloor(minTcb) {
+  if (minTcb === undefined) return;
+  if (minTcb === null || typeof minTcb !== 'object' || Array.isArray(minTcb)) throw new Error('invalid TCB floor: expected an object with parts bl, tee, snp, ucode');
+  for (const [k, v] of Object.entries(minTcb)) {
+    if (!TCB_PARTS.includes(k)) throw new Error(`invalid TCB floor: unknown part "${k}"`);
+    if (!Number.isInteger(v) || v < 0 || v > 255) throw new Error(`invalid TCB floor: part ${k} must be an integer from 0 to 255`);
+  }
+}
+
+/** Fingerprints are compared trimmed and lower-cased; each must then be exactly 96 hex characters. */
+export function normalizeMeasurements(list) {
+  return list.map((m) => {
+    const n = String(m).trim().toLowerCase();
+    if (!/^[0-9a-f]{96}$/.test(n)) throw new Error('invalid fingerprint: expected 96 hex characters');
+    return n;
+  });
+}
+
 export async function verifySnp({ report, certs, product = 'Genoa', binding, allowedMeasurements = [], allowAnyMeasurement = false, minTcb }) {
+  checkTcbFloor(minTcb);
+  allowedMeasurements = normalizeMeasurements(allowedMeasurements);
   const rep = parseReport(report);
   // Before any signature work: a guest that allows debugging or migration can be read or moved by the
   // host, so no later check makes its report worth trusting. Policy is 8 bytes little-endian at offset 8.
@@ -190,7 +213,7 @@ export async function verifySnp({ report, certs, product = 'Genoa', binding, all
   }
   if (!(await verifyReportSignature(rep, chain.vcekSpki))) throw new Error('report signature does not verify with the VCEK');
   // A floor, not a pin: the caller names the oldest firmware it will run on, per part; unset parts are not checked.
-  for (const part of ['bl', 'tee', 'snp', 'ucode']) {
+  for (const part of TCB_PARTS) {
     if (minTcb?.[part] !== undefined && reported[part] < minTcb[part]) throw new Error(`reported firmware is below the floor: ${part} ${reported[part]} < ${minTcb[part]}`);
   }
   if (binding) {

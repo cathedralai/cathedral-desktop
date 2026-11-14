@@ -31,6 +31,16 @@ try:
 except subprocess.TimeoutExpired:
     check("no fingerprint choice: exits non-zero", False, "the shim kept running")
 
+# Same forms as the page: trimmed and lower-cased, then exactly 96 hex characters.
+try:
+    shim("--measurement", "AB" * 48)
+    check("an upper-case --measurement is accepted at start", False, "exited")
+except subprocess.TimeoutExpired:
+    check("an upper-case --measurement is accepted at start", True, "still running when the timeout hit")
+for label, bad in (("too short", "ab" * 47), ("not hex", "zz" * 48)):
+    r = shim("--measurement", bad)
+    check(f"a --measurement that is {label}: exits non-zero with a message", r.returncode != 0 and "fingerprint" in r.stderr, r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "")
+
 for extra in (["--measurement", "ab" * 48], ["--allow-any-measurement"]):
     try:
         shim(*extra)

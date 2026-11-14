@@ -70,6 +70,32 @@ if (existsSync(join(fx, 'report.bin')) && existsSync(join(fx, 'vcek.der'))) {
       check(`floor one above the reported ${part}: refused`, false, 'accepted');
     } catch (e) { check(`floor one above the reported ${part}: refused`, /below the floor/i.test(e.message) && e.message.includes(part), e.message); }
   }
+  // The floor is checked for shape before anything is compared: only the four part names, each an integer 0 to 255.
+  // A part left out means no floor for that part (the other parts still apply).
+  const meas = rep.measurement;
+  for (const [label, floor] of [['an unknown key', { snp: 1, bogus: 1 }], ['NaN', { snp: NaN }], ['a negative', { snp: -1 }], ['a float', { snp: 1.5 }],
+      ['a string', { snp: '5' }], ['over 255', { snp: 256 }], ['null', { snp: null }], ['an array', [1, 2, 3, 4]], ['a number', 5], ['a string instead of an object', 'snp']]) {
+    try {
+      await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true, minTcb: floor }); check(`floor with ${label}: refused`, false, 'accepted');
+    } catch (e) { check(`floor with ${label}: refused`, /^invalid TCB floor/.test(e.message), e.message); }
+  }
+  try {
+    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true, minTcb: { snp: 28 } });
+    check('floor with one part only: the others are not checked', r.ok);
+    const e = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true, minTcb: {} });
+    check('an empty floor object is no floor', e.ok);
+  } catch (e) { check('partial floor', false, e.message); }
+
+  // Fingerprints: trimmed and lower-cased, then exactly 96 hex characters; anything else is refused up front.
+  try {
+    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowedMeasurements: [`  ${meas.toUpperCase()}\n`] });
+    check('an upper-case, padded fingerprint is accepted', r.ok && r.testMode === false);
+  } catch (e) { check('an upper-case, padded fingerprint is accepted', false, e.message); }
+  for (const [label, bad] of [['too short', meas.slice(0, 94)], ['too long', meas + '00'], ['not hex', 'zz' + meas.slice(2)], ['empty', '']]) {
+    try {
+      await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowedMeasurements: [meas, bad] }); check(`fingerprint ${label}: refused`, false, 'accepted');
+    } catch (e) { check(`fingerprint ${label}: refused`, /^invalid fingerprint/.test(e.message), e.message); }
+  }
   // No fingerprint list is a refusal unless the caller says, in words, that any build will do.
   for (const [label, extra] of [['no list', {}], ['empty list', { allowedMeasurements: [] }], ['allowAnyMeasurement false', { allowAnyMeasurement: false }]]) {
     try {

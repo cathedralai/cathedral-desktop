@@ -63,6 +63,24 @@ for part in tcb:
             lambda part=part: verify(ark_der=read("amd-genoa-ark.der"), allow_any_measurement=True, min_tcb={part: tcb[part] + 1}),
             f"below the floor: {part}")
 
+# The floor is checked for shape before anything is compared: only the four part names, each an integer 0 to 255.
+# A part left out means no floor for that part (the other parts still apply). Same messages as the browser verifier.
+ARK = read("amd-genoa-ark.der")
+for label, floor in (("an unknown key", {"snp": 1, "bogus": 1}), ("NaN", {"snp": float("nan")}), ("a negative", {"snp": -1}),
+                     ("a float", {"snp": 1.5}), ("a string", {"snp": "5"}), ("over 255", {"snp": 256}), ("None", {"snp": None}),
+                     ("a bool", {"snp": True}), ("a list", [1, 2, 3, 4]), ("a number", 5), ("a string instead of a dict", "snp")):
+    refused(f"floor with {label}: refused", lambda floor=floor: verify(ark_der=ARK, allow_any_measurement=True, min_tcb=floor), "invalid TCB floor")
+r = verify(ark_der=ARK, allow_any_measurement=True, min_tcb={"snp": 28})
+check("floor with one part only: the others are not checked", r["ok"])
+r = verify(ark_der=ARK, allow_any_measurement=True, min_tcb={})
+check("an empty floor dict is no floor", r["ok"])
+
+# Fingerprints: trimmed and lower-cased, then exactly 96 hex characters; anything else is refused up front.
+r = verify(ark_der=ARK, allowed_measurements=[f"  {measurement.upper()}\n"])
+check("an upper-case, padded fingerprint is accepted", r["ok"] and not r["test_mode"])
+for label, bad in (("too short", measurement[:94]), ("too long", measurement + "00"), ("not hex", "zz" + measurement[2:]), ("empty", "")):
+    refused(f"fingerprint {label}: refused", lambda bad=bad: verify(ark_der=ARK, allowed_measurements=[measurement, bad]), "invalid fingerprint")
+
 for label, kw in (("no list", {}), ("empty list", {"allowed_measurements": []}), ("allow_any_measurement false", {"allow_any_measurement": False})):
     refused(f"{label}: refused", lambda kw=kw: verify(ark_der=read("amd-genoa-ark.der"), **kw), "fingerprint")
 

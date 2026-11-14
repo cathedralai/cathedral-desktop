@@ -74,8 +74,11 @@ async def main():
         ap.error("give --measurement HEX (repeatable) to say which build to trust, or --allow-any-measurement to accept any build")
     bh, bp = a.box.rsplit(":", 1)
     lh, lp = a.listen.rsplit(":", 1)
-    verify = Verify(product=a.product, allowed_measurements=a.measurement,
-                    allow_dev=a.allow_dev, allow_any_measurement=a.allow_any_measurement)
+    try:
+        verify = Verify(product=a.product, allowed_measurements=a.measurement,
+                        allow_dev=a.allow_dev, allow_any_measurement=a.allow_any_measurement)
+    except ValueError as e:
+        ap.error(str(e))
     # CDP opens a connection per target and reconnects freely, and a ticket is
     # single use: one --ticket serves the first connection and nothing after it.
     mint = minter(a.ticket_key, a.target) if a.ticket_key else None
