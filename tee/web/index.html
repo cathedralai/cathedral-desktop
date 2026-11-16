@@ -88,7 +88,7 @@
         rfb.sendCredentials({ password: pw });
       });
       rfb.addEventListener('securityfailure', (e) => { set('link', 'off', 'refused'); gone('Refused', 'The desktop refused the password.', e.detail?.reason || ''); });
-      rfb.addEventListener('disconnect', (e) => { set('link', 'off', 'offline'); gone('Disconnected', e.detail?.clean ? 'The box closed the desktop.' : 'The stream dropped.', stream.error?.message || ''); });
+      rfb.addEventListener('disconnect', (e) => { set('link', 'off', 'offline'); gone('Disconnected', stream.error || !e.detail?.clean ? 'The stream dropped.' : 'The box closed the desktop.', stream.error?.message || ''); });
     } else {
       stream.onmessage = (pt) => { const el = document.createElement('pre'); el.textContent = new TextDecoder().decode(pt); document.getElementById('screen').appendChild(el); };
       stream.onclose = (err) => { set('link', 'off', 'offline'); gone('Disconnected', err ? 'The stream dropped.' : 'The box closed the stream.', err?.message || ''); };
