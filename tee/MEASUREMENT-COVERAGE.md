@@ -13,7 +13,7 @@ Spike, from source only. No box was booted. Parent: AB#363 (publish the TEE box 
 
 - `cathedral-sandbox` `room-kit/sealed/launch-guest.sh:68`: `sev-snp-guest,...,kernel-hashes=on`. Desktop box: `tee/rootfs/RUNBOOK-c48.md` (AB#362 QEMU line, `kernel-hashes=on`).
 - The dm-verity root hash rides the command line (`tee/rootfs/README.md`), so the measured command line also pins the rootfs.
-- The fingerprint tool in PR #7 (`tee/build/`) computes this with `sev-snp-measure` from OVMF, kernel, initrd and command line. Its run 5 value equals a chip-signed report.
+- The fingerprint tool from PR #7 (`tee/build/measure/`) computes this with `sev-snp-measure` from OVMF, kernel, initrd and command line. Its run 5 value equals a chip-signed report.
 
 ## Cloud Hypervisor (main 5eeaa6b, 13 Nov 2026)
 
@@ -32,7 +32,7 @@ Spike, from source only. No box was booted. Parent: AB#363 (publish the TEE box 
 
 ## Why the default stage0 build is not enough for us
 
-- Our verifiers check MEASUREMENT and the REPORT_DATA binding only: `tee/client/sealed_stream.py:104-106`, `tee/web/snp-verify.js:141-153`. Neither reads a DICE event log.
+- Our verifiers check MEASUREMENT, the REPORT_DATA binding and a firmware (TCB) floor: `tee/client/sealed_stream.py:131-141,168-172`, `tee/web/snp-verify.js:219-228`. Neither reads a DICE event log, so neither sees stage0's kernel, initrd or command line digests.
 - Our report comes from boxd after boot, not from stage0. Any kernel that boots can ask the chip for a report with its own REPORT_DATA. MEASUREMENT does not change with the initrd unless the hash table is both measured and enforced.
 - The sealed data volume key (`cathedral-sandbox` `room-kit/sealed/sealed_data_key.py:56`, `docs/SEALED_DATA_VOLUME.md:81`) binds MEASUREMENT and policy. An unenforced initrd would derive the same key and could open a customer's workspace.
 - A naive check on a host gives a false pass. With stock Cloud Hypervisor, two boxes that differ only in initrd will show different MEASUREMENTs, because the table is measured. That proves measurement, not enforcement. A negative control must serve a different initrd than the one hashed.
