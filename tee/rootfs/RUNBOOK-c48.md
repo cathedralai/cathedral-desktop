@@ -66,7 +66,9 @@ websockify --web tee/web 6090 127.0.0.1:8445
 Expect: the chip shows `attested`, the desktop renders, then about 20 s in the relay prints the
 TAMPER line and the page drops to `Disconnected` with `authentication failed`. Nothing after the
 flipped frame is drawn. Then the other direction: restart the relay with `--direction up`, reload;
-the box console prints `STREAM auth failure, closing` and the page shows `Disconnected`.
+after 20 s move the mouse over the desktop (an idle viewer may send nothing up, and the flip waits
+for the next frame); the box console prints `STREAM auth failure, closing` and the page shows
+`Disconnected` with `pipe closed` (the box hung up; the browser saw no bad frame itself).
 `--frame 3` instead of `--after-seconds` flips the first DATA frame, before the desktop draws.
 
 Post on AB#591: the screenshot of the desktop with the chip, the screenshot after the drop, the

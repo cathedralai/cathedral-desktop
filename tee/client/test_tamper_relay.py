@@ -96,6 +96,25 @@ async def main():
         check("box closes the stream on the flipped frame", err == "closed", err)
         s.close()
 
+        # A delay of 0 with the handshake frames due: the relay must still skip them and flip the
+        # first DATA frame, so the stream opens and only the data is refused.
+        p, port = await relay("--direction", "up", "--after-seconds", "0")
+        procs.append(p)
+        try:
+            s = await stream_via(port)
+            await s.send(b"JOB 1\n")
+            try:
+                got = await asyncio.wait_for(s.recv(), 5)
+                err = f"accepted {got!r}"
+            except asyncio.IncompleteReadError:
+                err = "closed"
+            s.close()
+        except Exception as e:  # noqa: BLE001
+            err = f"open failed: {type(e).__name__}: {e}"
+        line = await tamper_line(p)
+        check("--after-seconds skips the handshake and flips the first DATA frame",
+              line.startswith("TAMPER flipped up frame 3 ") and err == "closed", f"{line} / {err}")
+
         # The same box still serves a clean stream afterwards: a tamper costs one stream, not the box.
         p, port = await relay("--frame", "1000")
         procs.append(p)

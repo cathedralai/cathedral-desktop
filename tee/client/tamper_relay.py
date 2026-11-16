@@ -9,7 +9,7 @@ the low bit of the last byte (inside the AES-GCM tag). The other direction is fo
   up:   client to box (boxd must fail to decrypt and close; vnc and cdp log `STREAM auth failure, closing`)
 
 Frames are counted from 1 per direction: 1 and 2 are HELLO/ATTEST and NK message 1/2, so 3 is the
-first DATA frame. With --after-seconds the first frame that passes after S seconds is flipped
+first DATA frame. With --after-seconds the first DATA frame that passes after S seconds is flipped
 instead, which lets a viewer render the desktop first and then lose the stream.
 Each flip prints `TAMPER flipped <direction> frame <n> (<len> bytes)` on stdout."""
 import argparse
@@ -47,7 +47,9 @@ async def framed(reader, writer, direction, frame, after, t0):
                 return
             body = bytearray(await reader.readexactly(length))
             n += 1
-            due = (n == frame) if after is None else (time.monotonic() - t0 >= after)
+            # With a delay, only DATA frames (3 on) are candidates: flipping HELLO/ATTEST or a
+            # handshake message would test the handshake, not the relay path this tool is for.
+            due = (n == frame) if after is None else (n >= 3 and time.monotonic() - t0 >= after)
             if not flipped and due and length > 0:
                 body[-1] ^= 0x01
                 flipped = True
@@ -79,6 +81,8 @@ async def serve(args):
         done, pending = await asyncio.wait([asyncio.ensure_future(t) for t in tasks], return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
             t.cancel()
+        # Collect every result so an error in a finished side is not reported as never retrieved.
+        await asyncio.gather(*done, *pending, return_exceptions=True)
         cw.close()
         bw.close()
 
@@ -98,7 +102,7 @@ def main(argv=None):
     p.add_argument("--direction", choices=("down", "up"), default="down")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--frame", type=int, default=3, help="1-based frame to flip in that direction (default 3, the first DATA frame)")
-    g.add_argument("--after-seconds", type=float, help="flip the first frame that passes after this many seconds")
+    g.add_argument("--after-seconds", type=float, help="flip the first DATA frame (3 on) that passes after this many seconds")
     args = p.parse_args(argv)
     if args.frame < 1:
         p.error("--frame starts at 1")
