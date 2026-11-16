@@ -147,7 +147,7 @@ const frame = (b) => { const h = new Uint8Array(4); new DataView(h.buffer).setUi
 
 export class SealedStream {
   /**
-   * verify: { certs: {ark, ask, vcek?}, allowedMeasurements: [], product, fetchVcek?: async (url) => Uint8Array, allowDev?: false }
+   * verify: { certs: {ark, ask, vcek?}, allowedMeasurements: [], allowAnyMeasurement?: false, minTcb?: {bl, tee, snp, ucode}, product, fetchVcek?: async (url) => Uint8Array, allowDev?: false }
    * The box's static key must be bound as sha256(static) in REPORT_DATA[32:64]; REPORT_DATA[0:32] is the
    * TLS SPKI hash from AB#361 (checked only if verify.tlsSpki is given).
    */
@@ -182,9 +182,9 @@ export class SealedStream {
       if (!equal(Uint8Array.from(atob(named.x25519_public_b64), (c) => c.charCodeAt(0)), rs)) throw new Error('binding names a different stream key than the box presented');
       if (verify.tlsSpki && bound.tls_spki_sha256 !== hex(await sha256(verify.tlsSpki))) throw new Error('binding names a different TLS key');
       const binding = { first: await sha256(bindingBytes), second: null };
-      s.attestation = await verifySnp({ report, certs, product: verify.product, binding, allowedMeasurements: verify.allowedMeasurements || [] });
+      s.attestation = await verifySnp({ report, certs, product: verify.product, binding, allowedMeasurements: verify.allowedMeasurements || [], allowAnyMeasurement: verify.allowAnyMeasurement === true, minTcb: verify.minTcb });
       s.attestation.binding = bound;
-      onstatus(`attested ${s.attestation.measurement.slice(0, 12)}${s.attestation.testMode ? ' (no fingerprint pinned)' : ''}`);
+      onstatus(`attested ${s.attestation.measurement.slice(0, 12)}${s.attestation.testMode ? ' (any build accepted)' : ''}`);
     }
     const prologue = cat(te.encode(PROLOGUE), await sha256(report || new Uint8Array(0)));
     const hs = await Handshake.create(prologue, rs);

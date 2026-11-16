@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "description": "Run 5 of the desktop TEE box on c48 (7 Nov 2026). Chip-signed: the MEASUREMENT in that run's attestation report equals the expected value for 2 vCPUs. Hashes and parameters only; the binaries are not in this repository. The kernel was built twice on one host (c48) with identical output, but no build recipe is in this repository, so it is a measured file, not a reproducible build.",
+  "tool": {
+    "name": "sev-snp-measure",
+    "version": "0.0.13",
+    "mode": "snp"
+  },
+  "inputs": {
+    "firmware": {
+      "file": "OVMF.amdsev.fd",
+      "sha256": "ac27e626b097cf6f9eae09b79fc87fc2d3fb6e99c8d97b27f0603993c06a28bb",
+      "source": "Ubuntu ovmf 2025.11-3ubuntu7.3, /usr/share/ovmf/OVMF.amdsev.fd"
+    },
+    "kernel": {
+      "file": "bzImage-desktop-7.0.14-repro",
+      "sha256": "62a3737a50236cdbdebd3884e16d33fa02b8c6be03c09ab257d4cd15098f3f54",
+      "source": "Linux 7.0.14 built twice on c48 with the same result; no recipe in this repository"
+    },
+    "initrd": {
+      "file": "initrd-desktop.gz",
+      "sha256": "44108c44c956b8f519fdb8bfb5ab9a8e2eac4303e7a73e48cdb2b43504b5c349",
+      "source": "mkinitrd-desktop.sh on c48; base initrd-net.gz has no recipe"
+    }
+  },
+  "cmdline": "console=ttyS0 rdinit=/init panic=-1 quiet loglevel=0 dm-mod.create=\"desktop,,,ro,0 807224 verity 1 /dev/vda /dev/vdb 4096 4096 100903 0 sha256 f7c159b8c64070faa4d4af29d4afb598026a002ef946993bb68c1a4456fff2d0 636174686564726c2d6465736b746f702d76657269747920202020202020202020\"",
+  "launch": {
+    "vcpu_type": "EPYC-v4",
+    "kernel_hashes": true,
+    "guest_features": "0x1",
+    "vmm_type": "QEMU",
+    "policy": "0x30000",
+    "qemu": "1:10.2.1+ds-1ubuntu3.2",
+    "memory_note": "guest memory size is not measured"
+  },
+  "expected": {
+    "2": "106b6e56b5c5a03bbb759962112ca0c181fb01798dd8f9812a9794974e2f326689ce12732b4af4c0cc8ecc2b1fc2ff6d"
+  }
+}

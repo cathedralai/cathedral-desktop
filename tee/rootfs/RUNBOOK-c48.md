@@ -48,7 +48,7 @@ http://HOST:6090/index.html?relay=ws://HOST:6090/websockify&target=vnc&fp=<MEASU
 ```
 
 The page verifies the report in the browser, shows `attested · <measurement> · chip <id>`, and
-renders the desktop over the stream. With `fp=` empty it says `NO FINGERPRINT PINNED` in the chip.
+renders the desktop over the stream. Without `fp=` the page refuses. To learn a build's fingerprint, add `nofp=1`; the chip then says `ANY BUILD ACCEPTED`.
 Screenshot that chip and the desktop for AB#592.
 
 ## Drive it (CDP, host or Mac through a tunnel)
@@ -86,7 +86,7 @@ that opens more than one stream mints per connection rather than carrying a tick
 - `cdp_shim.py --ticket-key $K` mints one per connection, which is what CDP needs: Chromium opens a
   connection per target and reconnects freely, so a single `--ticket` serves the first and nothing
   after it.
-- viewer: add `&ticket=$T` to the URL (`--target vnc`). The page cannot mint (the mint key stays off
+- viewer: add `#ticket=$T` to the URL (after the `?...` part, as a fragment: the page removes it from the address bar; a link with a `ticket=` in the query is refused, and the page says the ticket must follow the `#`. Treat a ticket that was put in a query as used and mint a new one) (`--target vnc`). The page cannot mint (the mint key stays off
   the browser), so one ticket is one view: a reload needs a fresh `T`. AB#591's mint API is what
   removes that step.
 

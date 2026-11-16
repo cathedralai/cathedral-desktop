@@ -3,6 +3,8 @@ Interop of the Python initiator with boxd -dev: handshake, JOB round trips insid
 tamper detection, refusal of a dev box when attestation is required, and the ticket rules."""
 import asyncio
 import base64
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -32,8 +34,11 @@ async def main():
     try:
         r, w = await asyncio.open_connection("127.0.0.1", 28444)
         t0 = time.monotonic()
-        s = await open_stream(r, w, target="job", verify=Verify(allow_dev=True))
+        warned = io.StringIO()
+        with contextlib.redirect_stderr(warned):
+            s = await open_stream(r, w, target="job", verify=Verify(allow_dev=True))
         check("handshake with a dev box", s.attestation.get("dev") is True, f"{(time.monotonic() - t0) * 1000:.1f} ms")
+        check("accepting a box with no attestation prints a warning", "WARNING" in warned.getvalue() and "attestation" in warned.getvalue(), warned.getvalue().strip())
         replies = []
         for i in range(1, 4):
             await s.send(f"JOB {i}\n".encode())

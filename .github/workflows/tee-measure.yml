@@ -1,0 +1,62 @@
+# Tests for the launch fingerprint scripts (tee/build/measure). They need neither the control bundle
+# (not in the repository) nor an AMD host. The report signature tests run the repository's own JS verifier.
+name: tee-measure
+
+on:
+  pull_request:
+    paths:
+      - 'tee/build/measure/**'
+      - 'tee/build/manifests/**'
+      - 'tee/build/manifest.schema.json'
+      - 'tee/web/snp-verify.js'
+      - 'tee/fixtures/**'
+      - '.github/workflows/tee-measure.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tee/build/measure/**'
+      - 'tee/build/manifests/**'
+      - 'tee/build/manifest.schema.json'
+      - 'tee/web/snp-verify.js'
+      - 'tee/fixtures/**'
+      - '.github/workflows/tee-measure.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tee-measure-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 'runner' keeps the Python that ships on ubuntu-latest, which is what a plain `python3` is.
+        python: ['runner', '3.11', '3.12']
+    env:
+      REQUIRE_NODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: matrix.python != 'runner'
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Shell syntax
+        run: |
+          for f in tee/build/measure/*.sh; do bash -n "$f"; done
+      - name: Unit tests
+        run: python3 -I -m unittest discover -s tee/build/measure -v
+      - name: Pinned tool installs from the hash list
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --only-binary :all: --require-hashes -r tee/build/measure/requirements.txt
+          "$RUNNER_TEMP/venv/bin/sev-snp-measure" --version
