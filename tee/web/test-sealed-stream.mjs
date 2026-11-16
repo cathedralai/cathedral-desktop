@@ -14,12 +14,22 @@ const check = (name, ok, detail = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} 
 const box = spawn(boxd, ['-dev', '-noticket', '-tls', '127.0.0.1:18443', '-stream', '127.0.0.1:18444'], { stdio: ['ignore', 'ignore', 'pipe'] });
 await new Promise((res, rej) => { box.stderr.on('data', (d) => { if (/LISTEN/.test(d.toString())) res(); }); box.on('exit', (c) => rej(new Error(`boxd exited ${c}`))); setTimeout(() => rej(new Error('boxd did not listen')), 5000); });
 
-function tcpPipe(port, { tamper = false } = {}) {
+// pipe.tamperNext = true flips one bit in the ciphertext of the next frame read from the socket.
+// Armed after the handshake, at a frame boundary, and aimed past the 4-byte length header: boxd
+// writes header and body separately, so TCP chunks do not line up with frames, and flipping the
+// last byte of the third chunk sometimes hit the header instead (CI: "no close" within 2s).
+function tcpPipe(port) {
   const sock = net.connect(port, '127.0.0.1');
-  let n = 0;
-  const pipe = { onbytes: null, onclose: null, send: (b) => sock.write(b), close: () => sock.destroy(),
+  const pipe = { onbytes: null, onclose: null, tamperNext: false, send: (b) => sock.write(b), close: () => sock.destroy(),
     ready: new Promise((res, rej) => { sock.on('connect', res); sock.on('error', rej); }) };
-  sock.on('data', (d) => { const u8 = new Uint8Array(d); if (tamper && ++n === 3) u8[u8.length - 1] ^= 0x01; pipe.onbytes?.(u8); });
+  let skip = 4; // bytes of the next frame's length header still to pass before the first ciphertext byte
+  sock.on('data', (d) => {
+    const u8 = new Uint8Array(d);
+    if (pipe.tamperNext) {
+      if (skip < u8.length) { u8[skip] ^= 0x01; pipe.tamperNext = false; skip = 4; } else skip -= u8.length;
+    }
+    pipe.onbytes?.(u8);
+  });
   sock.on('close', () => pipe.onclose?.());
   return pipe;
 }
@@ -38,8 +48,9 @@ try {
 } catch (e) { check('dev stream', false, e.message); }
 
 try {
-  const pipe = tcpPipe(18444, { tamper: true }); await pipe.ready;
+  const pipe = tcpPipe(18444); await pipe.ready;
   const s = await SealedStream.open({ pipe, target: 'job', verify: { allowDev: true } });
+  pipe.tamperNext = true;
   const closed = new Promise((res) => { s.onclose = (err) => res(err); });
   s.send(te.encode('JOB 9\n'));
   const err = await Promise.race([closed, new Promise((r) => setTimeout(() => r(new Error('no close')), 2000))]);
