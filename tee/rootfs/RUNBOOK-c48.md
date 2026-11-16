@@ -61,16 +61,22 @@ stream frames unchanged except one, where it flips a bit in the AES-GCM tag, and
 ```
 python3 tee/client/tamper_relay.py --listen 127.0.0.1:8445 --box BOXIP:8444 --direction down --after-seconds 20
 websockify --web tee/web 6090 127.0.0.1:8445
-# browser: the same URL as above (relay=ws://HOST:6090/websockify&target=vnc&fp=<MEASUREMENT>&certs=...)
+T=$(python3 tee/client/mint_ticket.py issue --key $K --box BOXIP:8444 --target vnc)   # K as in Tickets below
+# browser: the URL from "See the desktop" plus the ticket as a fragment:
+# http://HOST:6090/index.html?relay=ws://HOST:6090/websockify&target=vnc&fp=<MEASUREMENT>&certs=<...>#ticket=$T
 ```
+
+One ticket is one view (see Tickets below): every reload, including the one for `--direction up`,
+needs a freshly minted `T` in the URL. Reusing the old link is refused as a replay, not as a tamper.
 
 Expect: the chip shows `attested`, the desktop renders, then about 20 s in the relay prints the
 TAMPER line (if it does not, move the mouse: the flip waits for the next frame) and the page
 drops to `Disconnected`, `The stream dropped.`, `authentication failed`. Nothing after the flipped
-frame is drawn. Then the other direction: restart the relay with `--direction up`, reload;
-after 20 s move the mouse over the desktop (an idle viewer may send nothing up, and the flip waits
-for the next frame); the box console prints `STREAM auth failure, closing` and the page shows
-`Disconnected`, `The stream dropped.`, `pipe closed` (the box hung up; the browser saw no bad frame itself).
+frame is drawn. Then the other direction: restart the relay with `--direction up`, mint a new
+`T`, open the URL with it; after 20 s move the mouse over the desktop (an idle viewer may send
+nothing up, and the flip waits for the next frame); the box console prints
+`STREAM auth failure, closing` and the page shows `Disconnected`, `The stream dropped.`,
+`pipe closed` (the box hung up; the browser saw no bad frame itself).
 `--frame 3` instead of `--after-seconds` flips the first DATA frame, before the desktop draws.
 
 Post on AB#591: the screenshot of the desktop with the chip, the screenshot after the drop, the
