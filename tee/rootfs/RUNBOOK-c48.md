@@ -51,6 +51,27 @@ The page verifies the report in the browser, shows `attested · <measurement> ·
 renders the desktop over the stream. Without `fp=` the page refuses. To learn a build's fingerprint, add `nofp=1`; the chip then says `ANY BUILD ACCEPTED`.
 Screenshot that chip and the desktop for AB#592.
 
+## Tampered relay frame (AB#591)
+
+Same page, with `tee/client/tamper_relay.py` between websockify and the box. The relay forwards the
+stream frames unchanged except one, where it flips a bit in the AES-GCM tag, and prints
+`TAMPER flipped <direction> frame <n> (<len> bytes)` when it does.
+
+```
+python3 tee/client/tamper_relay.py --listen 127.0.0.1:8445 --box BOXIP:8444 --direction down --after-seconds 20
+websockify --web tee/web 6090 127.0.0.1:8445
+# browser: the same URL as above (relay=ws://HOST:6090/websockify&target=vnc&fp=<MEASUREMENT>&certs=...)
+```
+
+Expect: the chip shows `attested`, the desktop renders, then about 20 s in the relay prints the
+TAMPER line and the page drops to `Disconnected` with `authentication failed`. Nothing after the
+flipped frame is drawn. Then the other direction: restart the relay with `--direction up`, reload;
+the box console prints `STREAM auth failure, closing` and the page shows `Disconnected`.
+`--frame 3` instead of `--after-seconds` flips the first DATA frame, before the desktop draws.
+
+Post on AB#591: the screenshot of the desktop with the chip, the screenshot after the drop, the
+relay log with the TAMPER lines, the box console line, and the MEASUREMENT.
+
 ## Drive it (CDP, host or Mac through a tunnel)
 
 ```
