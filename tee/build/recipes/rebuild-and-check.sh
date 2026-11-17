@@ -8,9 +8,9 @@
 # 4. check:    tee/build/measure/check.sh with manifests/run5-example.manifest.json: every input hash
 #              and the computed fingerprint must equal the manifest (and the chip-signed value of run 5)
 #
-# Needs: Ubuntu 26.04 x86_64 with gcc 15.2.0-16ubuntu1 and binutils 2.46 (another toolchain gives
-# another kernel hash), build-essential libelf-dev libssl-dev flex bison bc cpio curl, Python 3.11+,
-# about 3 GB of disk. No AMD hardware is needed.
+# Needs: Ubuntu 26.04 x86_64 with gcc 15.2.0-16ubuntu1, binutils 2.46 and zstd 1.5.7+dfsg-3 (another
+# version gives another kernel hash), build-essential libelf-dev libssl-dev flex bison bc gawk zstd cpio
+# curl python3-venv, Python 3.11+, about 3 GB of disk. No AMD hardware is needed.
 #
 # Usage: tee/build/recipes/rebuild-and-check.sh [WORKDIR]   (default: ./tee-rebuild)
 set -euo pipefail
@@ -20,6 +20,8 @@ W=$(mkdir -p "${1:-tee-rebuild}" && cd "${1:-tee-rebuild}" && pwd)
 RELEASE=${RELEASE:-https://github.com/cathedralai/cathedral-desktop/releases/download/tee-fingerprint-run5}
 OVMF_DEB=ovmf-amdsev_2025.11-3ubuntu7.3_all.deb
 OVMF_DEB_SHA256=f2a54db678d98ce1a5ac27155cb037cbf6e3efc918d11a35af1ca4606a290d29
+# Fallback once the Ubuntu mirrors carry a newer version; checked against the same pin.
+OVMF_DEB_URL=https://launchpad.net/ubuntu/+archive/primary/+files/$OVMF_DEB
 mkdir -p "$W/inputs"
 
 echo "== kernel"
@@ -31,7 +33,7 @@ curl -sSfL -o "$W/initrd-net.gz" "$RELEASE/initrd-net.gz"
 
 echo "== firmware"
 cd "$W"
-[ -f "$OVMF_DEB" ] || apt-get download ovmf-amdsev=2025.11-3ubuntu7.3
+[ -f "$OVMF_DEB" ] || apt-get download ovmf-amdsev=2025.11-3ubuntu7.3 || curl -sSfL -o "$OVMF_DEB" "$OVMF_DEB_URL"
 echo "$OVMF_DEB_SHA256  $OVMF_DEB" | sha256sum -c
 rm -rf ovmf; dpkg-deb -x "$OVMF_DEB" ovmf
 cp ovmf/usr/share/ovmf/OVMF.amdsev.fd inputs/

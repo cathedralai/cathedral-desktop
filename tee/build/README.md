@@ -64,7 +64,8 @@ fall back to a default silently.
 
 The bundle (every file the control reads, about 37 MB: the c48 boot artifacts, the image 4 verity
 line, and the four runs' reports, VCEKs, command lines and recorded values) is not in this repository.
-It is kept in the team's private notes and is not published yet. `CATHEDRAL_CONTROL_DIR` names the folder, laid out like those notes. `measure/control-inputs.sha256`
+It is kept in the team's private notes and is not published yet. `CATHEDRAL_CONTROL_DIR` names the
+folder, laid out like those notes. `measure/control-inputs.sha256`
 lists the sha256 of each file, and the control checks the bundle against it first, so a second person
 knows they hold the same bytes. Unset, the control prints SKIP and exits 0. A mismatch exits 1.
 
@@ -89,7 +90,7 @@ values; 0.0.13 is pinned because the c48 notes used it.
     `f2a54db6...`), not built here.
 - Not here yet: a recipe for the base initrd, a firmware build, and a pinned rootfs build (this
   repository's rootfs script does not pin a snapshot or a build date). The kernel hash depends on the
-  toolchain: another gcc or binutils version gives another hash.
+  toolchain: another gcc, binutils or zstd version gives another hash.
 - What a passing check shows: the arithmetic from these input files to this number, and that for runs
   4 to 7 the number is the one the chip signed. It does not prove the files were built from source, and
   it does not prove a new box reports the number; that needs an AMD host.

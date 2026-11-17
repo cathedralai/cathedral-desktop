@@ -88,10 +88,11 @@ Published fingerprint, run 5 (7 Nov 2026), 2 vCPUs, EPYC-v4, policy 0x30000, `se
 That value is the MEASUREMENT in the chip-signed report from run 5 on real SEV-SNP hardware. Every
 input is pinned in `tee/build/manifests/run5-example.manifest.json`.
 
-Rebuild it yourself (Ubuntu 26.04 x86_64, about 3 minutes on 40 cores, 3 GB of disk, no AMD hardware):
+Rebuild it yourself (Ubuntu 26.04 x86_64 with gcc 15.2.0-16ubuntu1, binutils 2.46 and zstd 1.5.7; about
+3 minutes on 48 cores, 3 GB of disk, no AMD hardware):
 
 ```sh
-sudo apt-get install -y build-essential libelf-dev libssl-dev flex bison bc cpio curl python3-venv
+sudo apt-get install -y build-essential libelf-dev libssl-dev flex bison bc gawk zstd cpio curl python3-venv
 git clone https://github.com/cathedralai/cathedral-desktop && cd cathedral-desktop
 tee/build/recipes/rebuild-and-check.sh
 ```
@@ -103,10 +104,12 @@ box, compare the MEASUREMENT in its attestation report with the value above; `te
 verifies the report's AMD signature chain.
 
 What this does and does not show (details in `tee/build/README.md`):
-- It shows the number follows from these inputs, and the kernel and initrd rebuild byte for byte. The
-  kernel needs gcc 15.2.0-16ubuntu1 and binutils 2.46; another toolchain gives another hash.
+- It shows the number follows from these inputs: the kernel rebuilds byte for byte from kernel.org
+  source, and the initrd repacks byte for byte from a copied base. Another gcc, binutils or zstd
+  version gives another kernel hash.
 - The base initrd (`initrd-net.gz`, release asset `tee-fingerprint-run5`) and the firmware are copied
-  files without a build recipe here, and the rootfs build is not pinned yet.
+  files without a build recipe here. The base carries a `boxd` binary of unknown source that the init
+  never runs (see "Finding" in `tee/build/README.md`). The rootfs build is not pinned yet.
 - Receipts and reports are rooted in the AMD chip, not in a Cathedral key. A matching fingerprint says
   which code booted; it is not by itself a claim that no operator can see inside the box. The open
   items for that claim are tracked separately.
