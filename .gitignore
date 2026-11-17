@@ -7,3 +7,4 @@ __pycache__/
 tee/web/core/
 tee/web/vendor/
 tee/web/fixtures/
+tee-rebuild/
