@@ -336,6 +336,13 @@ func (s *seenTickets) use(id [32]byte, exp int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().Unix()
+	// verifyTicket checked expiry with an earlier clock reading and without the lock. If the
+	// second has turned since, the cleanup below forgets this ticket's first use, so expiry is
+	// checked again here, with the same reading the cleanup uses.
+	if now > exp {
+		console("TICKET expired before use")
+		return false
+	}
 	for k, e := range s.used {
 		if e < now {
 			delete(s.used, k)
