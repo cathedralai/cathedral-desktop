@@ -118,24 +118,69 @@ def _skip_regex(src, i):
     return i + 1  # not a regex after all; treat the "/" as a character
 
 
-_EXPR = re.compile(r"\$\{([^}]*)\}")
+def _skip_string(src, i):
+    """The index just past the quoted string that starts at src[i]."""
+    j, n = i + 1, len(src)
+    while j < n and src[j] != src[i]:
+        j += 2 if src[j] == "\\" else 1
+    return j + 1
 
 
-def _template_variants(body):
+def _expression_end(src, i):
+    """The index of the "}" that closes a template expression whose source starts at src[i]. Braces, strings,
+    nested templates, comments and regex literals inside the expression are skipped whole."""
+    depth, n = 0, len(src)
+    while i < n:
+        c = src[i]
+        if src.startswith("//", i):
+            i = src.find("\n", i)
+            i = n if i < 0 else i
+        elif src.startswith("/*", i):
+            i = src.find("*/", i)
+            i = n if i < 0 else i + 2
+        elif c == "/" and _starts_regex(src, i):
+            i = _skip_regex(src, i)
+        elif c in "'\"":
+            i = _skip_string(src, i)
+        elif c == "`":
+            i = _template(src, i)[2]
+        elif c == "}" and depth == 0:
+            return i
+        else:
+            depth += {"{": 1, "}": -1}.get(c, 0)
+            i += 1
+    return n
+
+
+def _template(src, i):
+    """The template literal that starts at src[i] == "`": its text pieces, the source of each ${...} expression
+    between them (one fewer than the pieces), and the index just past its closing backtick."""
+    pieces, exprs, j, n, start = [], [], i + 1, len(src), i + 1
+    while j < n and src[j] != "`":
+        if src[j] == "\\":
+            j += 2
+        elif src.startswith("${", j):
+            k = _expression_end(src, j + 2)
+            pieces.append(src[start:j])
+            exprs.append(src[j + 2:k])
+            j = start = k + 1
+        else:
+            j += 1
+    pieces.append(src[start:j])
+    return pieces, exprs, j + 1
+
+
+def _template_variants(pieces, exprs):
     """The ways a template can read on screen. An expression's literals may or may not be shown, and a ternary shows
     one branch, so the text is read with every expression dropped, with all literals in place, and with each single
     literal in place of its expression (the others dropped). A phrase that wraps an expression whose literals never
     show (a function argument, the other branch) is still caught by the dropped reading."""
-    exprs = list(_EXPR.finditer(body))
-    if not exprs:
-        return [body]
-
     def fill(choice):
-        return _EXPR.sub(lambda m: choice.get(m.start(), ""), body)
-    literals = [[x for x in js_strings(m.group(1)).split(SENT) if x] for m in exprs]
-    variants = [fill({}), fill({m.start(): " ".join(lits) for m, lits in zip(exprs, literals)})]
-    for m, lits in zip(exprs, literals):
-        variants += [fill({m.start(): lit}) for lit in lits]
+        return "".join(p + choice.get(k, "") for k, p in enumerate(pieces[:-1])) + pieces[-1]
+    literals = [[x for x in js_strings(e).split(SENT) if x] for e in exprs]
+    variants = [fill({}), fill({k: " ".join(lits) for k, lits in enumerate(literals)})]
+    for k, lits in enumerate(literals):
+        variants += [fill({k: lit}) for lit in lits]
     return list(dict.fromkeys(variants))
 
 
@@ -156,20 +201,18 @@ def js_strings(src):
         elif c == "/" and _starts_regex(src, i):
             i = _skip_regex(src, i)
         elif c in "'\"`":
-            j = i + 1
-            while j < n and src[j] != c:
-                j += 2 if src[j] == "\\" else 1
-            body = src[i + 1:j]
             if c == "`":
-                extras += [js_strings(e) for e in _EXPR.findall(body)]
-                variants = [_js_unescape(v) for v in _template_variants(body)]
+                pieces, exprs, end = _template(src, i)
+                extras += [js_strings(e) for e in exprs]
+                variants = [_js_unescape(v) for v in _template_variants(pieces, exprs)]
             else:
-                variants = [_js_unescape(body)]
+                end = _skip_string(src, i)
+                variants = [_js_unescape(src[i + 1:end - 1])]
             if prev_end is not None and re.fullmatch(r"\s*\+\s*", src[prev_end:i]):
                 parts[-1] = [p + v for p in parts[-1] for v in variants]
             else:
                 parts.append(variants)
-            prev_end = i = j + 1
+            prev_end = i = end
         else:
             i += 1
     return SENT.join([v for vs in parts for v in dict.fromkeys(vs)] + [e for e in extras if e])
@@ -449,6 +492,14 @@ class GuardSelfTest(unittest.TestCase):
                     "const m = `No one ${fmt(a, 'b', 'c')}can see inside`;"):
             with self.subTest(src=src):
                 self.assertEqual(self.rules({"tee/web/a.js": src + "\n"}), ["no one can see"])
+
+    def test_an_expression_with_braces_or_a_nested_template_does_not_split_a_phrase(self):
+        for src in ("const m = `No one ${fmt({a: 1})} can see inside`;", "const m = `No one ${f(() => { return 1; })} can see inside`;",
+                    "const m = `No one ${`inner ${x}`} can see inside`;", "const m = `No one ${'}'} can see inside`;",
+                    "const m = `No one ${a.map(x => `<${x}>`).join('')} can see inside`;"):
+            with self.subTest(src=src):
+                self.assertEqual(self.rules({"tee/web/a.js": src + "\n"}), ["no one can see"])
+        self.assertEqual(self.rules({"tee/web/a.js": "const m = `ok ${`a ${b}`}`; const n = 'This proves it';\n"}), ["prove"])
 
     def test_a_ternary_branch_reads_on_its_own(self):
         self.assertEqual(self.rules({"tee/web/a.js": "const m = `No one ${ok ? 'can see' : 'waits'} inside`;\n"}), ["no one can see"])
