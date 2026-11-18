@@ -243,9 +243,6 @@ def _markup_text(text):
     return htmllib.unescape(out) + "".join(SENT + v for v in values)
 
 
-_REF_DEF = re.compile(r"^ {0,3}\[[^\]\n]+\]:[ \t]*(?:<[^>\n]*>|\S+)(?:[ \t]+(?:\"([^\"]*)\"|'([^']*)'|\(([^)]*)\)))?[ \t]*$")
-
-
 def _markdown_text(text):
     """Plain text with SENT where a list item, heading, table row or cell, paragraph or code fence ends. A line
     wrap inside one paragraph or one list item is only a space."""
@@ -255,12 +252,11 @@ def _markdown_text(text):
             out.append(SENT)
             continue
         line = re.sub(r"^[ \t]*(?:>[ \t]*)+", "", line)
-        # A reference definition, `[1]: url` with an optional title and nothing else, is not shown; its title is
-        # a tooltip, read as its own block. A line with more text after the label is a paragraph and is read.
-        d = _REF_DEF.match(line)
-        if d:
-            out.append(SENT + (d.group(1) or d.group(2) or d.group(3) or "") + SENT)
-            continue
+        # A reference definition (`[1]: url "title"`) is read as a block of its own, never dropped: its title is a
+        # tooltip, and a line that only looks like a definition is visible text.
+        is_def = re.match(r"^ {0,3}\[[^\]\n]+\]:", line)
+        if is_def:
+            out.append(SENT)
         if re.match(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", line):
             out.append(SENT)
             line = re.sub(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", "", line)
@@ -274,7 +270,7 @@ def _markdown_text(text):
         line = re.sub(r"\]\[[^\]\n]*\]", "]", line)
         # A backslash at the end of a line is a hard break, shown as a line wrap like <br>.
         line = re.sub(r"\\[ \t]*$", "", line)
-        out.append(re.sub(r"[*_`~\[\]]", "", line) + " ")
+        out.append(re.sub(r"[*_`~\[\]]", "", line) + (SENT if is_def else " "))
     return "".join(out)
 
 
@@ -544,11 +540,12 @@ class GuardSelfTest(unittest.TestCase):
                      "No one\\\ncan see inside.\n"):
             with self.subTest(text=text):
                 self.assertEqual(self.rules({"README.md": text}), ["no one can see"])
-        self.assertEqual(self.rules({"README.md": "[no one]: https://example.com/can-see\n\ncan see it\n"}), [])
+        self.assertEqual(self.rules({"README.md": "[no one]: https://example.com/x\ncan see it\n"}), [])
 
     def test_a_line_that_only_looks_like_a_reference_definition_is_read(self):
         for text in ("[Note](https://example.com): no one can see inside.\n", "[1]: no one can see inside.\n",
-                     "[Note]: https://example.com and no one can see inside.\n", '[1]: https://example.com "No one can see inside"\n'):
+                     "[Note]: https://example.com and no one can see inside.\n", '[1]: https://example.com "No one can see inside"\n',
+                     '[1]: https://example.com "No *one* can `see` inside"\n', '[1]: <https://example.com> "No one can see inside"\n'):
             with self.subTest(text=text):
                 self.assertEqual(self.rules({"README.md": text}), ["no one can see"])
 
