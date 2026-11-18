@@ -85,6 +85,12 @@ cp "$W/tee/web/get-novnc.sh" "$NOTABLE/"
 (cd "$NOTABLE" && PATH="$W/bin:$PATH" bash ./get-novnc.sh 9.9.9 >"$W/out" 2>&1); rc=$?
 [ "$rc" -ne 0 ] && grep -q "no novnc-sha256.txt" "$W/out" && [ -f "$NOTABLE/core/keep.js" ] && [ -f "$NOTABLE/vendor/keep.js" ]; check "a folder with no table is refused and nothing is deleted there" $?
 
+# The viewer folder itself with its table gone refuses and removes the old, unchecked install.
+VIEWER="$W/viewer"; mkdir -p "$VIEWER/core" "$VIEWER/vendor"; echo old > "$VIEWER/core/rfb.js"; echo old > "$VIEWER/vendor/pako.js"
+cp "$W/tee/web/get-novnc.sh" "$VIEWER/"; : > "$VIEWER/index.html"; : > "$VIEWER/link.js"
+(cd "$VIEWER" && PATH="$W/bin:$PATH" bash ./get-novnc.sh 9.9.9 >"$W/out" 2>&1); rc=$?
+[ "$rc" -ne 0 ] && grep -q "no novnc-sha256.txt" "$W/out" && [ ! -e "$VIEWER/core" ] && [ ! -e "$VIEWER/vendor" ]; check "the viewer folder with no table is refused and its old install removed" $?
+
 # The production table pins the default version.
 awk '$1 !~ /^#/ && $1 == "1.6.0" && $2 ~ /^[0-9a-f]{64}$/ { ok=1 } END { exit !ok }' "$SRC/novnc-sha256.txt"; check "the real table has a sha256 for the default version 1.6.0" $?
 grep -q 'V="${1:-1.6.0}"' "$SRC/get-novnc.sh"; check "the default version is the pinned one" $?

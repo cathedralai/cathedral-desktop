@@ -22,6 +22,11 @@ HERE="$(cd "$(dirname "$SELF")" && pwd -P)"
 TABLE="$HERE/novnc-sha256.txt"
 if [ ! -f "$TABLE" ]; then
   echo "get-novnc: no novnc-sha256.txt in ${HERE}; refusing to run from here" >&2
+  # The viewer's own folder that lost its table: its old install was never checked, so it goes. Any other
+  # folder (the script copied somewhere) keeps its core/ and vendor/, which may not be ours.
+  if [ -f "$HERE/index.html" ] && [ -f "$HERE/link.js" ]; then
+    rm -rf "$HERE/core" "$HERE/vendor"
+  fi
   exit 1
 fi
 
