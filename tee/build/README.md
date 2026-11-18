@@ -64,8 +64,8 @@ fall back to a default silently.
 
 The bundle (every file the control reads, about 37 MB: the c48 boot artifacts, the image 4 verity
 line, and the four runs' reports, VCEKs, command lines and recorded values) is not in this repository.
-It lives in the notes folder `~/Documents/INBOX/blueprint2-tee-20261104/` on Fred's Mac; ask Fred for
-a copy. `CATHEDRAL_CONTROL_DIR` names the folder, laid out like those notes. `measure/control-inputs.sha256`
+It is kept in the team's private notes and is not published yet. `CATHEDRAL_CONTROL_DIR` names the
+folder, laid out like those notes. `measure/control-inputs.sha256`
 lists the sha256 of each file, and the control checks the bundle against it first, so a second person
 knows they hold the same bytes. Unset, the control prints SKIP and exits 0. A mismatch exits 1.
 
@@ -76,12 +76,21 @@ values; 0.0.13 is pinned because the c48 notes used it.
 ## What is and is not in this repository
 
 - Here: the manifest format, the fingerprint and check scripts, the unit tests, and the control.
-- Not here yet: a reproducible build of the rootfs, kernel, initrd or firmware. The kernel (`62a3...`)
-  was built twice on one host (c48) with identical output, but no recipe is in this repository. The
-  kernel, initrd and firmware are copies of files from c48 or from an Ubuntu package. Their build recipes
-  (pinned tarball hash, builder toolchain, initrd base, firmware package hash) are the next step, and a
-  kernel rebuilt elsewhere may differ byte for byte. This repository's rootfs script does not pin a
-  snapshot or a build date either.
+- Here since AB#363: recipes for the kernel and the initrd, in `recipes/`, and one command that
+  rebuilds them, fetches the firmware and runs the check (`recipes/rebuild-and-check.sh`; see the
+  top-level README, "Rebuild and check the fingerprint").
+  - Kernel: `recipes/kbuild-repro.sh` with `recipes/kernel-7.0.14-desktop.config` on upstream Linux
+    7.0.14, build stamps fixed, empty module signing key. Built on c48 twice, then on a second host in
+    another folder on 17 Nov 2026 (Ubuntu 26.04, gcc 15.2.0-16ubuntu1, binutils 2.46): all three gave
+    `62a3737a...`.
+  - Initrd: `recipes/mkinitrd-desktop.sh` swaps `tee/rootfs/initrd-init-desktop` into the base
+    `initrd-net.gz` and repacks it reproducibly to `44108c44...`. The base has no recipe; it is a
+    release asset (sha256 `f2ec74c1...`), so the base itself is a copied file, not a build.
+  - Firmware: `OVMF.amdsev.fd` from Ubuntu's `ovmf-amdsev` 2025.11-3ubuntu7.3 (package sha256
+    `f2a54db6...`), not built here.
+- Not here yet: a recipe for the base initrd, a firmware build, and a pinned rootfs build (this
+  repository's rootfs script does not pin a snapshot or a build date). The kernel hash depends on the
+  toolchain: another gcc, binutils or zstd version gives another hash.
 - What a passing check shows: the arithmetic from these input files to this number, and that for runs
   4 to 7 the number is the one the chip signed. It does not show that the files were built from source, and
   it does not show that a new box reports the number; that needs an AMD host.

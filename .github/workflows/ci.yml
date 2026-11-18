@@ -102,6 +102,10 @@ jobs:
         run: node tee/web/test-sealed-stream.mjs "$RUNNER_TEMP/bin/boxd"
       - name: Python stream client against boxd
         run: python tee/client/test_sealed_stream.py "$RUNNER_TEMP/bin/boxd"
+      - name: Tampering relay, Python client (AB#591)
+        run: python tee/client/test_tamper_relay.py "$RUNNER_TEMP/bin/boxd"
+      - name: Tampering relay, browser stream library (AB#591)
+        run: node tee/web/test-tamper-relay.mjs "$RUNNER_TEMP/bin/boxd"
 
   browser:
     needs: boxd

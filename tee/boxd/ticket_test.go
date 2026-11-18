@@ -134,6 +134,19 @@ func TestExpiredEntriesDropped(t *testing.T) {
 	}
 }
 
+// verifyTicket reads the clock before use takes the lock. A replay that passes verifyTicket in the
+// ticket's last second can reach use after the second has turned, when cleanup would forget the
+// first use. This is the state use sees then: the ticket is recorded and its expiry has passed.
+func TestReplayAcrossExpiryBoundaryRefused(t *testing.T) {
+	s := &seenTickets{used: map[[32]byte]int64{}}
+	id := [32]byte{7}
+	exp := time.Now().Unix() - 5
+	s.used[id] = exp
+	if s.use(id, exp) {
+		t.Fatal("a used ticket was accepted again once cleanup had forgotten it")
+	}
+}
+
 func TestParallelUseHasOneWinner(t *testing.T) {
 	r := newRig(t)
 	tk := r.sign(r.body(nil))

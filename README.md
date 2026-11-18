@@ -73,6 +73,47 @@ nothing changes. ctcli's `--image` takes catalog names only, so ctdesk posts thi
 print seconds for the create and until the desktop is ready. The VNC password is still generated per room
 at start; the image has none.
 
+## Rebuild and check the fingerprint
+
+The desktop TEE box (`tee/`) is an AMD SEV-SNP guest. Its launch fingerprint is the MEASUREMENT the
+AMD chip signs into each attestation report. It covers the firmware, the kernel, the initrd and the
+kernel command line (which carries the dm-verity root hash of the read-only rootfs), and the vCPU count.
+
+Published fingerprint, run 5 (7 Nov 2026), 2 vCPUs, EPYC-v4, policy 0x30000, `sev-snp-measure` 0.0.13:
+
+```
+106b6e56b5c5a03bbb759962112ca0c181fb01798dd8f9812a9794974e2f326689ce12732b4af4c0cc8ecc2b1fc2ff6d
+```
+
+That value is the MEASUREMENT in the chip-signed report from run 5 on real SEV-SNP hardware. Every
+input is pinned in `tee/build/manifests/run5-example.manifest.json`.
+
+Rebuild it yourself (Ubuntu 26.04 x86_64 with gcc 15.2.0-16ubuntu1, binutils 2.46 and zstd 1.5.7; about
+3 minutes on 48 cores, 3 GB of disk, no AMD hardware):
+
+```sh
+sudo apt-get install -y build-essential libelf-dev libssl-dev flex bison bc gawk zstd cpio curl python3-venv
+git clone https://github.com/cathedralai/cathedral-desktop && cd cathedral-desktop
+tee/build/recipes/rebuild-and-check.sh
+```
+
+It builds Linux 7.0.14 from kernel.org with the pinned config (`62a3737a...`), rebuilds the initrd
+(`44108c44...`), takes `OVMF.amdsev.fd` from Ubuntu's `ovmf-amdsev` 2025.11-3ubuntu7.3 (`ac27e626...`),
+computes the fingerprint and prints `RESULT: PASS` only if all four equal the manifest. To check a live
+box, compare the MEASUREMENT in its attestation report with the value above; `tee/web/snp-verify.js`
+verifies the report's AMD signature chain.
+
+What this does and does not show (details in `tee/build/README.md`):
+- It shows the number follows from these inputs: the kernel rebuilds byte for byte from kernel.org
+  source, and the initrd repacks byte for byte from a copied base. Another gcc, binutils or zstd
+  version gives another kernel hash.
+- The base initrd (`initrd-net.gz`, release asset `tee-fingerprint-run5`) and the firmware are copied
+  files without a build recipe here. The base carries a `boxd` binary of unknown source that the init
+  never runs (see "Finding" in `tee/build/README.md`). The rootfs build is not pinned yet.
+- Receipts and reports are rooted in the AMD chip, not in a Cathedral key. A matching fingerprint says
+  which code booted; it is not by itself a claim that no operator can see inside the box. The open
+  items for that claim are tracked separately.
+
 ## Layout
 
 | Path | Role |
@@ -88,6 +129,7 @@ at start; the image has none.
 | `Dockerfile` | the prebuilt image: runs `desktop/bootstrap` at build, base image and cloudflared pinned |
 | `.github/workflows/publish-image.yml` | builds and pushes the image to GHCR, by hand only |
 | `evidence/` | screenshots from live rooms |
+| `tee/` | the SEV-SNP desktop TEE box: boxd, rootfs, clients, verifiers, fingerprint tools and rebuild recipes |
 
 ## Sealed pool facts this relies on (6 Nov 2026)
 
