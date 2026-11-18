@@ -57,6 +57,9 @@ def offline():
           and combined_check.tampered_refusal(RuntimeError("box presented no attestation report")) is None
           and combined_check.tampered_refusal(ConnectionRefusedError()) is None)
     check("NET line with CIDR gives the address", combined_check.net_address(["NET 10.99.9.13/24 via dhcp"]) == "10.99.9.13")
+    check("NET: a diagnostic line before the final one is skipped",
+          combined_check.net_address(["NET /sbin/x configured nothing, retrying with /sbin/box-dhcp",
+                                      "NET 10.99.9.13/24 via /sbin/box-dhcp"]) == "10.99.9.13")
     check("NET none and the user-mode fallback are not addresses",
           combined_check.net_address(["NET none via x"]) is None
           and combined_check.net_address(["NET 10.0.2.15/24 via fallback"]) is None)
@@ -115,6 +118,24 @@ async def run_target():
         check("run: timeout kills the job and its children", head.get("timed_out") is True and head.get("exit") == -1
               and took < 10, f"{head} {took:.1f} s")
 
+        # A client that hangs up mid-job frees the box: the next job is not answered "busy".
+        r, w = await asyncio.open_connection("127.0.0.1", 28644)
+        s = await open_stream(r, w, target="run", verify=Verify(allow_dev=True))
+        long_job = b"#!/bin/sh\nsleep 120\n"
+        await s.send(json.dumps({"size": len(long_job), "timeout_s": 300}).encode())
+        await s.send(long_job)
+        await asyncio.sleep(0.5)
+        s.close()
+        t0 = time.monotonic()
+        quick = b"#!/bin/sh\necho again\n"
+        while True:
+            head, out = await run_raw(28644, {"size": len(quick)}, quick)
+            if head.get("error") != "busy" or time.monotonic() - t0 > 10:
+                break
+            await asyncio.sleep(0.2)
+        check("run: a client that hangs up stops its job and frees the box", head.get("exit") == 0 and out == b"again\n",
+              f"{head} after {time.monotonic() - t0:.1f} s")
+
         head, _ = await run_raw(28644, {"size": 64 << 20 | 1}, b"")
         check("run: oversize upload refused before any bytes", head.get("error") == "size out of range", str(head))
         head, _ = await run_raw(28644, {"size": 4}, b"12345678")
@@ -147,7 +168,8 @@ def end_to_end():
     with tempfile.TemporaryDirectory() as tmp:
         job = os.path.join(tmp, "job")
         with open(job, "w") as f:
-            f.write("#!/bin/sh\necho hello\nexit 3\n")
+            # The expected text comes after the 200 characters kept for the table: the check reads all of it.
+            f.write("#!/bin/sh\nprintf '%0300d\\n' 0\necho hello\nexit 3\n")
         launch = f"exec {BOXD} -dev -noticket -tls 127.0.0.1:{{tls_port}} -stream 127.0.0.1:{{stream_port}}"
         common = ["--launch", launch, "--host", "127.0.0.1", "--tls-port", "29443", "--stream-port", "29444",
                   "--port-stride", "2", "--binary", job, "--expect-exit", "3", "--expect-output", "hello",
@@ -159,9 +181,9 @@ def end_to_end():
             res = json.load(f)
         boxes = res["boxes"]
         last = out.getvalue().strip().splitlines()[-1]
-        check("e2e dev: two boxes pass every step; no tampered box is INCOMPLETE, exit 2",
+        check("e2e dev: two boxes pass every step; a dev run with no tampered box is INCOMPLETE, exit 2",
               rc == 2 and [b["ok"] for b in boxes] == [True, True] and res["complete"] is False
-              and last.startswith("INCOMPLETE") and all(set(combined_check.STEPS) <= set(b["ms"]) for b in boxes),
+              and last.startswith("INCOMPLETE (no tampered box") and "--allow-dev" in last and all(set(combined_check.STEPS) <= set(b["ms"]) for b in boxes),
               last)
         print("    " + "\n    ".join(ln for ln in out.getvalue().splitlines() if ln.strip()))
 
@@ -193,6 +215,13 @@ def end_to_end():
             boxes = json.load(f)["boxes"]
         check("e2e dev: an unreachable tampered box is a failure, exit 1",
               rc == 1 and boxes[-1]["tampered"] and not boxes[-1]["ok"], boxes[-1]["detail"])
+
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                combined_check.main(["--boxes", "0", "--measurement", "ab" * 48, *common])
+            check("--boxes 0 is refused", False, "accepted")
+        except SystemExit as e:
+            check("--boxes 0 is refused", e.code == 2, str(e.code))
 
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

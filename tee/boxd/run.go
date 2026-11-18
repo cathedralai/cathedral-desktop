@@ -113,7 +113,22 @@ func serveRun(c net.Conn, send, recv *cipherState) {
 	c.SetReadDeadline(time.Time{})
 	console("RUN " + hex.EncodeToString(sha256Of(bin))[:16])
 
-	res, out, err := runBinary(bin, req.Args, time.Duration(req.TimeoutS)*time.Second)
+	// The client sends nothing while the job runs, so a read that returns means it hung up (or broke the
+	// protocol): stop the job then, instead of holding runMu and the box for the rest of the timeout.
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		var one [1]byte
+		c.Read(one[:])
+		cancelRun()
+	}()
+	res, out, err := runBinary(runCtx, bin, req.Args, time.Duration(req.TimeoutS)*time.Second)
+	// Wake the watcher and wait for it, so no reader is left on the connection while we reply.
+	c.SetReadDeadline(time.Now())
+	<-watched
+	c.SetReadDeadline(time.Time{})
 	if err != nil {
 		refuse(err.Error())
 		return
@@ -175,7 +190,7 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 	return b.buf.Write(p)
 }
 
-func runBinary(bin []byte, args []string, timeout time.Duration) (runResult, []byte, error) {
+func runBinary(parent context.Context, bin []byte, args []string, timeout time.Duration) (runResult, []byte, error) {
 	res := runResult{SHA256: hex.EncodeToString(sha256Of(bin))}
 	dir, err := os.MkdirTemp("", "run-")
 	if err != nil {
@@ -190,7 +205,7 @@ func runBinary(bin []byte, args []string, timeout time.Duration) (runResult, []b
 		return res, nil, errors.New("could not store binary")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Dir = "/"

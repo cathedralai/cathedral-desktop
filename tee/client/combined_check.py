@@ -21,7 +21,8 @@ that is already up (boot time is then not measured).
 
 Exit 0 only when every box passes every step and every tampered box is refused at the MEASUREMENT check.
 A tampered box that fails to boot, answer or serve a report is a failure, not a refusal. A run with
-no tampered box exits 2 (INCOMPLETE): it is a smoke check, not AB#364 evidence.
+no tampered box, no box booted by --launch, or --allow-dev exits 2 (INCOMPLETE): a smoke check, not
+AB#364 evidence.
 """
 from __future__ import annotations
 
@@ -103,17 +104,22 @@ class Launched:
 
 def net_address(console: list[str]) -> str | None:
     """The box's IP from `NET 10.99.9.13/24 via ...`, or None when it has no usable one."""
+    # Only the final `NET <addr> via <script>` line names the address; box-init prints diagnostic NET lines
+    # (a DHCP retry, the fallback) before it.
+    found = None
     for line in console:
-        m = re.match(r"\s*NET\s+(\S+)", line)
+        m = re.match(r"\s*NET\s+(\S+)\s+via\b", line)
         if m:
-            ip = m.group(1).split("/")[0]
-            if ip in ("none", USER_NET_FALLBACK):
-                return None
-            return ip
-    return None
+            found = m.group(1).split("/")[0]
+    if found in (None, "none", USER_NET_FALLBACK):
+        return None
+    return found
 
 
 # ---- link checks
+
+
+MAX_REPORT_LINE = 16 << 10  # a report is 1184 bytes, so its hex line is under 2.5 KiB
 
 
 def fetch_report(host: str, port: int, wait: float = 15.0) -> tuple[bytes | None, bytes]:
@@ -135,11 +141,19 @@ def fetch_report(host: str, port: int, wait: float = 15.0) -> tuple[bytes | None
         cert = s.getpeercert(binary_form=True)
         s.sendall(b"REPORT\n")
         line = b""
+        # One deadline for the whole answer and a size cap: a box that trickles bytes must still fail.
+        answer_by = time.monotonic() + 10
         while not line.endswith(b"\n"):
+            left = answer_by - time.monotonic()
+            if left <= 0:
+                raise RuntimeError("box did not finish its REPORT answer in 10 s")
+            s.settimeout(left)
             chunk = s.recv(65536)
             if not chunk:
                 break
             line += chunk
+            if len(line) > MAX_REPORT_LINE:
+                raise RuntimeError(f"box REPORT answer longer than {MAX_REPORT_LINE} bytes")
     parts = line.split()
     if parts == [b"NOREPORT"]:
         return None, cert
@@ -276,12 +290,13 @@ def check_box(name: str, a, verify: Verify, binary: bytes, tampered: bool, launc
         step = "job"
         if "error" in head:
             raise RuntimeError(f"box refused the job: {head['error']}")
-        res["exit"], res["output"] = head["exit"], out.decode(errors="replace")[:200]
+        full = out.decode(errors="replace")
+        res["exit"], res["output"] = head["exit"], full[:200]
         if head.get("sha256") != hashlib.sha256(binary).hexdigest():
             raise RuntimeError("box ran a different binary than the one sent")
         if head["exit"] != a.expect_exit:
             raise RuntimeError(f"exit {head['exit']} (want {a.expect_exit}), output {out[:80]!r}")
-        if a.expect_output and a.expect_output not in res["output"]:
+        if a.expect_output and a.expect_output not in full:
             raise RuntimeError(f"output {out[:80]!r} lacks {a.expect_output!r}")
         res["ok"] = True
     except Exception as e:  # noqa: BLE001 - every failure is reported per box and step
@@ -384,6 +399,8 @@ def main(argv=None) -> int:
         ap.error("pin the published fingerprint: --measurement or --fingerprint-file")
     if not a.launch and not a.box:
         ap.error("--launch or --box")
+    if a.launch and a.boxes < 1:
+        ap.error("--boxes must be at least 1")
     if a.allow_dev:
         print("DEV MODE: boxes without an SNP report are accepted. Not evidence for AB#364.")
     with open(a.binary, "rb") as f:
@@ -417,9 +434,15 @@ def main(argv=None) -> int:
     passed = all(r["ok"] for r in results) and all(ok for _, ok, _ in offline)
     good = sum(1 for r in results if r["ok"] and not r["tampered"])
     refused = sum(1 for r in results if r["ok"] and r["tampered"])
-    # Without a tampered box nothing shows the fingerprint check refuses anything: a smoke run, not evidence.
-    complete = any(r["tampered"] for r in results)
-    verdict = ("ALL CHECKS PASSED" if complete else "INCOMPLETE (no tampered box)") if passed else "FAILED"
+    # Evidence needs a tampered box refused, at least one box booted here and timed, and real SNP reports.
+    # Anything less is a smoke run: no tampered box shows nothing about refusal, --box measures no boot,
+    # and --allow-dev accepts boxes with no report.
+    missing = [why for why, bad in (("no tampered box", not any(r["tampered"] for r in results)),
+                                    ("no box booted by --launch", not any("boot" in r["ms"] for r in results
+                                                                         if not r["tampered"])),
+                                    ("--allow-dev", a.allow_dev)) if bad]
+    complete = not missing
+    verdict = ("ALL CHECKS PASSED" if complete else f"INCOMPLETE ({', '.join(missing)})") if passed else "FAILED"
     print(f"\n{verdict}: {good}/{sum(not r['tampered'] for r in results)} boxes "
           f"passed, {refused}/{sum(r['tampered'] for r in results)} tampered refused, fingerprint "
           f"{fps[0][:16] + '...' if fps else 'none (dev)'}")
