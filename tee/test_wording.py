@@ -81,7 +81,7 @@ def _js_unescape(lit):
         e = m.group(1)
         if e[0] in "ux":
             return chr(int(e[1:].strip("{}"), 16))
-        return {"n": " ", "t": " ", "r": " "}.get(e, e)
+        return {"n": " ", "t": " ", "r": " ", "\n": "", "\r": ""}.get(e, e)  # a backslash at a line end continues the line
     return re.sub(r"\\(u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)", one, lit, flags=re.S)
 
 
@@ -219,22 +219,23 @@ def js_strings(src):
 
 
 _TAG = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)((?:[^<>\"']|\"[^\"]*\"|'[^']*')*)>")
-_ATTR = re.compile(r"\b(?:title|alt|aria-label|placeholder)\s*=\s*(?:\"([^\"]*)\"|'([^']*)')", re.I)
+_ATTR = re.compile(r"\b(?:title|alt|aria-label|placeholder)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'=<>`]+))", re.I)
 
 
 def _markup_text(text):
-    """Entities decoded; comments dropped; each tag becomes a space, or a block boundary for a block tag (a <wbr>
-    becomes nothing). The values of title, alt, aria-label and placeholder are not part of the visible text: each
-    is a block of its own, after the text."""
-    text = htmllib.unescape(text)
-    text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
+    """Comments dropped; each tag becomes a space, or a block boundary for a block tag (a <wbr> becomes nothing);
+    entities decoded. Tags are read before entities are decoded, so an encoded quote inside an attribute value
+    does not end it; tags that only appear once entities are decoded (&lt;b&gt;) are stripped too. The values of
+    title, alt, aria-label and placeholder, quoted or not, are not part of the visible text: each is a block of
+    its own, after the text."""
     values = []
 
     def tag(m):
         name = m.group(2).lower()
-        values.extend(a or b for a, b in _ATTR.findall(m.group(3)))
+        values.extend(htmllib.unescape(a or b or c) for a, b, c in _ATTR.findall(m.group(3)))
         return "" if name == "wbr" else (SENT if name in _BLOCK_TAGS else " ")
-    out = _TAG.sub(tag, text)
+    out = _TAG.sub(tag, re.sub(r"<!--.*?-->", " ", text, flags=re.S))
+    out = _TAG.sub(tag, re.sub(r"<!--.*?-->", " ", htmllib.unescape(out), flags=re.S))
     return htmllib.unescape(out) + "".join(SENT + v for v in values)
 
 
@@ -407,6 +408,9 @@ class GuardSelfTest(unittest.TestCase):
     def test_phrase_with_a_js_template_expression(self):
         self.assertEqual(self.rules({"tee/web/a.js": "const m = `no one ${x}can see it`;\n"}), ["no one can see"])
 
+    def test_phrase_with_a_js_line_continuation(self):
+        self.assertEqual(self.rules({"tee/web/a.js": "const m = 'This pro\\\nves it';\n"}), ["prove"])
+
     def test_phrase_with_a_js_unicode_escape(self):
         self.assertEqual(self.rules({"tee/web/a.js": "const m = 'Cathedral\\u2011signed';\n"}), ["Cathedral-signed"])
 
@@ -463,6 +467,12 @@ class GuardSelfTest(unittest.TestCase):
     def test_an_attribute_value_is_its_own_block(self):
         self.assertEqual(self.rules({"tee/web/p.html": '<p title="no one"> can see the list</p>\n'}), [])
         self.assertEqual(self.rules({"tee/web/p.html": '<p title="no one can see">ok</p>\n'}), ["no one can see"])
+
+    def test_an_encoded_quote_or_no_quotes_do_not_end_an_attribute_value(self):
+        for markup in ('<p title="He said &quot;hi&quot;, no one can see">ok</p>', "<img alt='It&#39;s proof'>",
+                       '<div title=proof>ok</div>', '<input placeholder=Cathedral&#8209;signed>'):
+            with self.subTest(markup=markup):
+                self.assertEqual(len(self.rules({"tee/web/p.html": markup + "\n"})), 1)
 
     def test_a_br_is_a_line_wrap_not_a_sentence_end(self):
         for markup in ("<p>No one<br>can see inside</p>", "<p>No one<br/>can see inside</p>", "<p>No one<BR />can see inside</p>"):
