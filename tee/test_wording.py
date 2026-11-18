@@ -104,8 +104,9 @@ def js_strings(src):
             body = src[i + 1:j]
             if c == "`":
                 # The text around an expression is the string; the literals inside an expression are strings of their own.
+                # A literal inside an expression is also shown in place: `No one ${'can see'}` displays one sentence.
                 extras += [js_strings(e) for e in re.findall(r"\$\{([^}]*)\}", body)]
-                body = re.sub(r"\$\{[^}]*\}", "", body)
+                body = re.sub(r"\$\{([^}]*)\}", lambda m: " ".join(js_strings(m.group(1)).split(SENT)), body)
             body = _js_unescape(body)
             if prev_end is not None and re.fullmatch(r"\s*\+\s*", src[prev_end:i]):
                 parts[-1] += body
@@ -152,6 +153,8 @@ def _markdown_text(text):
         if re.match(r"^[ \t]*(?:#{1,6}[ \t]|```|~~~)", line) or re.match(r"^[ \t]*\|", line):
             out.append(SENT)
             line = line.replace("|", SENT) + SENT
+        # A link or image shows its text, not its target: `[No one](url) can see` reads as one sentence.
+        line = re.sub(r"\]\([^)]*\)", "]", line)
         out.append(re.sub(r"[*_`~\[\]]", "", line) + " ")
     return "".join(out)
 
@@ -338,6 +341,13 @@ class GuardSelfTest(unittest.TestCase):
         root = self.tree({"README.md": 'Never say "no one can see inside".\n\nAlso no one can see it.\n'})
         found, _ = scan(root, allow)
         self.assertEqual([h[2] for h in found], ["no one can see"])
+
+    # Review of the merged head: a link target between words, a literal spliced into a template.
+    def test_a_markdown_link_target_does_not_split_a_phrase(self):
+        self.assertEqual(self.rules({"README.md": "[No one](https://example.com) can see inside.\n"}), ["no one can see"])
+
+    def test_a_literal_spliced_into_a_template_reads_in_place(self):
+        self.assertEqual(self.rules({"tee/web/a.js": "const m = `No one ${'can see'} inside`;\n"}), ["no one can see"])
 
     # Review round 3: template expressions, attributes inside a phrase, <br>, typographic apostrophes.
     def test_string_literals_inside_a_template_expression_are_scanned(self):
