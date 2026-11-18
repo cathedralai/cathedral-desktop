@@ -114,7 +114,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-      - run: pip install "cryptography==${CRYPTOGRAPHY_VERSION}" websockify==0.13.0 playwright==1.65.1
+      - run: pip install "cryptography==${CRYPTOGRAPHY_VERSION}" websockify==0.13.0 playwright==1.65.1 websockets==15.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: boxd
@@ -133,3 +133,8 @@ jobs:
           BOXD: ${{ runner.temp }}/bin/boxd
           CHROME: google-chrome
         run: python tee/client/test_cdp_shim.py
+      - name: CDP shim through a WebSocket relay
+        env:
+          BOXD: ${{ runner.temp }}/bin/boxd
+          CHROME: google-chrome
+        run: python tee/client/test_cdp_shim_ws.py
