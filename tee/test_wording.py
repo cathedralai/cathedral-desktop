@@ -184,6 +184,10 @@ def _template_variants(pieces, exprs):
     return list(dict.fromkeys(variants))
 
 
+# What may sit between two literals joined by +: spaces, comments and parentheses.
+_JOIN = r"(?:\s|/\*.*?\*/|//[^\n]*\n|[()])*\+(?:\s|/\*.*?\*/|//[^\n]*\n|[()])*"
+
+
 def js_strings(src):
     """The text of the string and template literals of JavaScript source. Literals joined by + become one
     string; every other pair is a separate block. A template is read in each way it can show (see
@@ -208,7 +212,7 @@ def js_strings(src):
             else:
                 end = _skip_string(src, i)
                 variants = [_js_unescape(src[i + 1:end - 1])]
-            if prev_end is not None and re.fullmatch(r"\s*\+\s*", src[prev_end:i]):
+            if prev_end is not None and re.fullmatch(_JOIN, src[prev_end:i], re.S):
                 parts[-1] = [p + v for p in parts[-1] for v in variants]
             else:
                 parts.append(variants)
@@ -257,6 +261,13 @@ def _markdown_text(text):
         # A link or image shows its text, not its target: `[No one](url) can see` reads as one sentence.
         # A destination or title may hold one level of parentheses: `[No one](https://x/a_(b)) can see`.
         line = re.sub(r"\]\((?:[^()\n]|\([^()\n]*\))*\)", "]", line)
+        # A reference link shows only its text: `[No one][1] can see`. Its definition line `[1]: url` shows nothing.
+        if re.match(r"^[ \t]*\[[^\]\n]+\]:[ \t]*\S", line):
+            out.append(SENT)
+            continue
+        line = re.sub(r"\]\[[^\]\n]*\]", "]", line)
+        # A backslash at the end of a line is a hard break, shown as a line wrap like <br>.
+        line = re.sub(r"\\[ \t]*$", "", line)
         out.append(re.sub(r"[*_`~\[\]]", "", line) + " ")
     return "".join(out)
 
@@ -521,6 +532,19 @@ class GuardSelfTest(unittest.TestCase):
                      '[No one](https://example.com "a (title)") can see inside.\n'):
             with self.subTest(text=text):
                 self.assertEqual(self.rules({"README.md": text}), ["no one can see"])
+
+    def test_a_reference_link_or_a_hard_break_does_not_split_a_phrase(self):
+        for text in ("No one can [see][1] inside.\n\n[1]: https://example.com\n", "[no one][x] can see it.\n\n[x]: /a\n",
+                     "No one\\\ncan see inside.\n"):
+            with self.subTest(text=text):
+                self.assertEqual(self.rules({"README.md": text}), ["no one can see"])
+        self.assertEqual(self.rules({"README.md": "[no one]: https://example.com/can-see\n\ncan see it\n"}), [])
+
+    def test_comments_and_parentheses_between_joined_literals(self):
+        for src in ("const m = 'No one ' + /* x */ 'can see';", "const m = ('No one ') + ('can see');",
+                    "const m = 'No one ' + // x\n  'can see';"):
+            with self.subTest(src=src):
+                self.assertEqual(self.rules({"tee/web/a.js": src + "\n"}), ["no one can see"])
 
     def test_a_regex_literal_is_not_a_comment_or_a_string(self):
         for src in ("const r = /[/*]/;\nconst m = 'This proves it';\n", "const r = s.split(/'/);\nconst m = 'This proves it';\n",
