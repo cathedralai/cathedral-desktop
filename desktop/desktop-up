@@ -99,7 +99,9 @@ else
   x11vnc -storepasswd "$PW" /run/desktop/vncpass >/dev/null 2>&1
   VNC_ARGS="-rfbauth /run/desktop/vncpass"
 fi
-running -x x11vnc || setsid x11vnc -display :1 $VNC_ARGS -rfbport 5901 -localhost -forever -shared -noxdamage -quiet >/run/desktop/x11vnc.log 2>&1 < /dev/null &
+# AB#802: X DAMAGE hints instead of polling the whole screen, and 5 ms (default 20) before sending an
+# update and between screen checks, so a change goes out sooner on each frame the viewer requests.
+running -x x11vnc || setsid x11vnc -display :1 $VNC_ARGS -rfbport 5901 -localhost -forever -shared -defer 5 -wait 5 -quiet >/run/desktop/x11vnc.log 2>&1 < /dev/null &
 WEB=/usr/share/novnc; [ -f /opt/desktop/web/index.html ] && WEB=/opt/desktop/web
 running -f websockify || setsid websockify --web "$WEB" 6080 localhost:5901 >/run/desktop/websockify.log 2>&1 < /dev/null &
 BASE=""
