@@ -85,9 +85,65 @@ def _js_unescape(lit):
     return re.sub(r"\\(u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)", one, lit, flags=re.S)
 
 
+# A "/" after one of these (or at the start) begins a regex literal, not a division.
+_REGEX_BEFORE = set("(,=:[!&|?{};+-*%<>~^")
+_REGEX_KEYWORDS = ("return", "typeof", "case", "do", "else", "in", "of", "void", "delete", "throw", "yield", "await")
+
+
+def _starts_regex(src, i):
+    k = i - 1
+    while k >= 0 and src[k].isspace():
+        k -= 1
+    if k < 0 or src[k] in _REGEX_BEFORE:
+        return True
+    word = re.search(r"[A-Za-z_$][\w$]*$", src[:k + 1])
+    return bool(word) and word.group(0) in _REGEX_KEYWORDS
+
+
+def _skip_regex(src, i):
+    """The index just past the regex literal that starts at src[i] == "/"; a "/" in a class or escape is not its end."""
+    j, n, in_class = i + 1, len(src), False
+    while j < n and src[j] != "\n":
+        c = src[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "[":
+            in_class = True
+        elif c == "]":
+            in_class = False
+        elif c == "/" and not in_class:
+            return j + 1
+        j += 1
+    return i + 1  # not a regex after all; treat the "/" as a character
+
+
+_EXPR = re.compile(r"\$\{([^}]*)\}")
+
+
+def _template_variants(body):
+    """The ways a template can read on screen. An expression's literals may or may not be shown, and a ternary shows
+    one branch, so the text is read with every expression dropped, with all literals in place, and with each single
+    literal in place of its expression (the others dropped). A phrase that wraps an expression whose literals never
+    show (a function argument, the other branch) is still caught by the dropped reading."""
+    exprs = list(_EXPR.finditer(body))
+    if not exprs:
+        return [body]
+
+    def fill(choice):
+        return _EXPR.sub(lambda m: choice.get(m.start(), ""), body)
+    literals = [[x for x in js_strings(m.group(1)).split(SENT) if x] for m in exprs]
+    variants = [fill({}), fill({m.start(): " ".join(lits) for m, lits in zip(exprs, literals)})]
+    for m, lits in zip(exprs, literals):
+        variants += [fill({m.start(): lit}) for lit in lits]
+    return list(dict.fromkeys(variants))
+
+
 def js_strings(src):
     """The text of the string and template literals of JavaScript source. Literals joined by + become one
-    string; every other pair is a separate block. Template expressions drop out. Comments are skipped."""
+    string; every other pair is a separate block. A template is read in each way it can show (see
+    _template_variants), and the literals inside its expressions are also blocks of their own. Comments and
+    regex literals are skipped."""
     parts, extras, i, n, prev_end = [], [], 0, len(src), None
     while i < n:
         c = src[i]
@@ -97,25 +153,26 @@ def js_strings(src):
         elif src.startswith("/*", i):
             i = src.find("*/", i)
             i = n if i < 0 else i + 2
+        elif c == "/" and _starts_regex(src, i):
+            i = _skip_regex(src, i)
         elif c in "'\"`":
             j = i + 1
             while j < n and src[j] != c:
                 j += 2 if src[j] == "\\" else 1
             body = src[i + 1:j]
             if c == "`":
-                # The text around an expression is the string; the literals inside an expression are strings of their own.
-                # A literal inside an expression is also shown in place: `No one ${'can see'}` displays one sentence.
-                extras += [js_strings(e) for e in re.findall(r"\$\{([^}]*)\}", body)]
-                body = re.sub(r"\$\{([^}]*)\}", lambda m: " ".join(js_strings(m.group(1)).split(SENT)), body)
-            body = _js_unescape(body)
-            if prev_end is not None and re.fullmatch(r"\s*\+\s*", src[prev_end:i]):
-                parts[-1] += body
+                extras += [js_strings(e) for e in _EXPR.findall(body)]
+                variants = [_js_unescape(v) for v in _template_variants(body)]
             else:
-                parts.append(body)
+                variants = [_js_unescape(body)]
+            if prev_end is not None and re.fullmatch(r"\s*\+\s*", src[prev_end:i]):
+                parts[-1] = [p + v for p in parts[-1] for v in variants]
+            else:
+                parts.append(variants)
             prev_end = i = j + 1
         else:
             i += 1
-    return SENT.join(parts + [e for e in extras if e])
+    return SENT.join([v for vs in parts for v in dict.fromkeys(vs)] + [e for e in extras if e])
 
 
 _TAG = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)((?:[^<>\"']|\"[^\"]*\"|'[^']*')*)>")
@@ -154,7 +211,8 @@ def _markdown_text(text):
             out.append(SENT)
             line = line.replace("|", SENT) + SENT
         # A link or image shows its text, not its target: `[No one](url) can see` reads as one sentence.
-        line = re.sub(r"\]\([^)]*\)", "]", line)
+        # A destination or title may hold one level of parentheses: `[No one](https://x/a_(b)) can see`.
+        line = re.sub(r"\]\((?:[^()\n]|\([^()\n]*\))*\)", "]", line)
         out.append(re.sub(r"[*_`~\[\]]", "", line) + " ")
     return "".join(out)
 
@@ -384,6 +442,31 @@ class GuardSelfTest(unittest.TestCase):
             with self.subTest(apostrophe=ap):
                 self.assertEqual(self.rules({"README.md": f"Cathedral can{ap}t see the screen.\n"}), ["Cathedral cannot see"])
                 self.assertEqual(self.rules({"README.md": f"The host can{ap}t change the software.\n"}), ["host cannot change the software"])
+
+    # Review round 4: a phrase that wraps an expression, a link target with parentheses, a regex literal.
+    def test_a_phrase_wrapping_an_expression_whose_literals_do_not_show_fails(self):
+        for src in ("const m = `No one ${t('label')} can see inside`;", "const m = `No one ${ok ? 'x' : 'y'} can see inside`;",
+                    "const m = `No one ${fmt(a, 'b', 'c')}can see inside`;"):
+            with self.subTest(src=src):
+                self.assertEqual(self.rules({"tee/web/a.js": src + "\n"}), ["no one can see"])
+
+    def test_a_ternary_branch_reads_on_its_own(self):
+        self.assertEqual(self.rules({"tee/web/a.js": "const m = `No one ${ok ? 'can see' : 'waits'} inside`;\n"}), ["no one can see"])
+        self.assertEqual(self.rules({"tee/web/a.js": "const m = `No one ${ok ? 'waits' : 'can see'} inside`;\n"}), ["no one can see"])
+        self.assertEqual(self.rules({"tee/web/a.js": "const m = `Box ${ok ? 'ready' : 'waiting'}.`;\n"}), [])
+
+    def test_a_markdown_link_target_with_parentheses_does_not_split_a_phrase(self):
+        for text in ("[No one](https://en.wikipedia.org/wiki/Box_(computing)) can see inside.\n",
+                     '[No one](https://example.com "a (title)") can see inside.\n'):
+            with self.subTest(text=text):
+                self.assertEqual(self.rules({"README.md": text}), ["no one can see"])
+
+    def test_a_regex_literal_is_not_a_comment_or_a_string(self):
+        for src in ("const r = /[/*]/;\nconst m = 'This proves it';\n", "const r = s.split(/'/);\nconst m = 'This proves it';\n",
+                    "const r = /\\/*/g; const m = 'This proves it';\n", "if (x) return /a/.test(y); const m = 'This proves it';\n"):
+            with self.subTest(src=src):
+                self.assertEqual(self.rules({"tee/web/a.js": src}), ["prove"])
+        self.assertEqual(self.rules({"tee/web/a.js": "const h = w / 2 / 'No one can see'.length;\n"}), ["no one can see"])
 
     # The verbs read and look are banned again; only the frames sentence (S4) is honest.
     def test_cannot_read_and_cannot_look_are_banned(self):

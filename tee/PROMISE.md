@@ -28,7 +28,7 @@ error strings of the box daemon in `tee/boxd` that the page prints.
 | P11 Console and debug access | Closed for content. The serial port takes HALT only. | Not needed. |
 | P12 Cathedral logs, metrics and support tools | Open for metadata. At boot the box's browser opens https://cathedral.computer (`tee/rootfs/box-init`), so Cathedral's web server can log the time, the address and the browser of that visit. Otherwise nothing in `tee/` sends data except AMD key fetches. The mint API is not built. | Open a local page at boot instead, and check the mint API when it is built. |
 | P13 The box's own outbound traffic | Open. The host sees the names it looks up and the sites it connects to. | Not planned. |
-| P14 The image build channel | Open. The repository is private and the build recipes are not in it. | Publish the source and the recipes, and a second-host build. |
+| P14 The image build channel | Partly closed. The repository is public and holds the recipes for the kernel and the initrd (`tee/build/README.md`); the kernel gave the same hash on a second host. The base initrd and the firmware have no recipe, and the rootfs build is not pinned. | Recipes for the base initrd and the firmware, and a pinned rootfs build. |
 | P15 The client build channel | Partly closed. The noVNC download is pinned by version and sha256. An existing install must be replaced by running `tee/web/get-novnc.sh` again. Nothing checks the files again when the page loads. | Check the files at load time (not built). |
 | P16 Keys | The box keys are fresh at every boot. The ticket key is Cathedral's. There is no customer key. | Customer mode. |
 | P17 Uploaded code run under a ticket | Open in draft pull request 11. | Allow it only in customer mode. |
