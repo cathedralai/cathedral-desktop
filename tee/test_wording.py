@@ -243,6 +243,9 @@ def _markup_text(text):
     return htmllib.unescape(out) + "".join(SENT + v for v in values)
 
 
+_REF_DEF = re.compile(r"^ {0,3}\[[^\]\n]+\]:[ \t]*(?:<[^>\n]*>|\S+)(?:[ \t]+(?:\"([^\"]*)\"|'([^']*)'|\(([^)]*)\)))?[ \t]*$")
+
+
 def _markdown_text(text):
     """Plain text with SENT where a list item, heading, table row or cell, paragraph or code fence ends. A line
     wrap inside one paragraph or one list item is only a space."""
@@ -252,6 +255,12 @@ def _markdown_text(text):
             out.append(SENT)
             continue
         line = re.sub(r"^[ \t]*(?:>[ \t]*)+", "", line)
+        # A reference definition, `[1]: url` with an optional title and nothing else, is not shown; its title is
+        # a tooltip, read as its own block. A line with more text after the label is a paragraph and is read.
+        d = _REF_DEF.match(line)
+        if d:
+            out.append(SENT + (d.group(1) or d.group(2) or d.group(3) or "") + SENT)
+            continue
         if re.match(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", line):
             out.append(SENT)
             line = re.sub(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", "", line)
@@ -261,10 +270,7 @@ def _markdown_text(text):
         # A link or image shows its text, not its target: `[No one](url) can see` reads as one sentence.
         # A destination or title may hold one level of parentheses: `[No one](https://x/a_(b)) can see`.
         line = re.sub(r"\]\((?:[^()\n]|\([^()\n]*\))*\)", "]", line)
-        # A reference link shows only its text: `[No one][1] can see`. Its definition line `[1]: url` shows nothing.
-        if re.match(r"^[ \t]*\[[^\]\n]+\]:[ \t]*\S", line):
-            out.append(SENT)
-            continue
+        # A reference link shows only its text: `[No one][1] can see`.
         line = re.sub(r"\]\[[^\]\n]*\]", "]", line)
         # A backslash at the end of a line is a hard break, shown as a line wrap like <br>.
         line = re.sub(r"\\[ \t]*$", "", line)
@@ -539,6 +545,12 @@ class GuardSelfTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(self.rules({"README.md": text}), ["no one can see"])
         self.assertEqual(self.rules({"README.md": "[no one]: https://example.com/can-see\n\ncan see it\n"}), [])
+
+    def test_a_line_that_only_looks_like_a_reference_definition_is_read(self):
+        for text in ("[Note](https://example.com): no one can see inside.\n", "[1]: no one can see inside.\n",
+                     "[Note]: https://example.com and no one can see inside.\n", '[1]: https://example.com "No one can see inside"\n'):
+            with self.subTest(text=text):
+                self.assertEqual(self.rules({"README.md": text}), ["no one can see"])
 
     def test_comments_and_parentheses_between_joined_literals(self):
         for src in ("const m = 'No one ' + /* x */ 'can see';", "const m = ('No one ') + ('can see');",
