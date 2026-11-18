@@ -318,11 +318,11 @@ func ticketOK(box *boxState, open openMsg) bool {
 	if box.ticketPub == nil {
 		return false
 	}
-	exp, ok := verifyTicket(box.ticketPub, open.Ticket, open.Target, box.staticPub)
+	exp, id, ok := verifyTicket(box.ticketPub, open.Ticket, open.Target, box.staticPub)
 	if !ok {
 		return false
 	}
-	return box.seen.use(open.Ticket, exp)
+	return box.seen.use(id, exp)
 }
 
 // seenTickets remembers used tickets until they expire.
@@ -331,21 +331,28 @@ type seenTickets struct {
 	used map[[32]byte]int64
 }
 
-func (s *seenTickets) use(ticket string, exp int64) bool {
+// id is the hash of the signed body (see verifyTicket), not of the string the client sent.
+func (s *seenTickets) use(id [32]byte, exp int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().Unix()
+	// verifyTicket checked expiry with an earlier clock reading and without the lock. If the
+	// second has turned since, the cleanup below forgets this ticket's first use, so expiry is
+	// checked again here, with the same reading the cleanup uses.
+	if now > exp {
+		console("TICKET expired before use")
+		return false
+	}
 	for k, e := range s.used {
 		if e < now {
 			delete(s.used, k)
 		}
 	}
-	key := sha256.Sum256([]byte(ticket))
-	if _, dup := s.used[key]; dup {
+	if _, dup := s.used[id]; dup {
 		console("TICKET replay refused")
 		return false
 	}
-	s.used[key] = exp
+	s.used[id] = exp
 	return true
 }
 
@@ -639,7 +646,10 @@ func hmacSHA256(key, data []byte) []byte {
 
 // ---- ticket (shape only until the mint exists)
 
-// verifyTicket checks shape, box, target, expiry (at most 10 minutes ahead) and signature; returns exp.
+// verifyTicket checks shape, box, target, expiry (at most 10 minutes ahead) and signature; returns exp and
+// the ticket's identity: sha256 of the decoded body, taken once the signature has verified. The identity
+// is not taken from the string the client sent, because the decoder accepts several spellings of one
+// ticket (line breaks, spare bits in the last character), and each spelling would otherwise count as new.
 //
 // The ticket names the box by its stream key, not by a room id. The key is this
 // box's and only this box's: it is made at boot, it is what REPORT_DATA commits
@@ -647,15 +657,16 @@ func hmacSHA256(key, data []byte) []byte {
 // for, so a minter can always name it. A room id would have to reach the box on
 // its measured command line, which would give every box a different measurement,
 // and a ticket that names nothing opens every box that pins the same mint key.
-func verifyTicket(pub []byte, ticket, target string, staticPub []byte) (int64, bool) {
+func verifyTicket(pub []byte, ticket, target string, staticPub []byte) (int64, [32]byte, bool) {
+	var none [32]byte
 	parts := strings.Split(ticket, ".")
 	if len(parts) != 2 {
-		return 0, false
+		return 0, none, false
 	}
 	body, err1 := base64.RawURLEncoding.DecodeString(parts[0])
 	sig, err2 := base64.RawURLEncoding.DecodeString(parts[1])
 	if err1 != nil || err2 != nil || len(sig) != 64 || len(pub) != 32 {
-		return 0, false
+		return 0, none, false
 	}
 	var t struct {
 		Box    string `json:"box"`
@@ -665,23 +676,23 @@ func verifyTicket(pub []byte, ticket, target string, staticPub []byte) (int64, b
 	}
 	now := time.Now().Unix()
 	if json.Unmarshal(body, &t) != nil || t.Target != target || now > t.Exp || t.Exp > now+600 {
-		return 0, false
+		return 0, none, false
 	}
 	if t.Box != base64.StdEncoding.EncodeToString(staticPub) {
 		console("TICKET for another box refused")
-		return 0, false
+		return 0, none, false
 	}
 	// Two tickets minted in the same second for one target would otherwise be
 	// byte-identical, and the second would be refused as its own replay: the
 	// nonce is what makes parallel connections (CDP opens several) possible.
 	if t.Nonce == "" {
 		console("TICKET without a nonce refused")
-		return 0, false
+		return 0, none, false
 	}
 	if !ed25519Verify(pub, body, sig) {
-		return 0, false
+		return 0, none, false
 	}
-	return t.Exp, true
+	return t.Exp, sha256.Sum256(body), true
 }
 
 // ---- attestation and files

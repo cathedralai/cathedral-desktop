@@ -48,8 +48,39 @@ http://HOST:6090/index.html?relay=ws://HOST:6090/websockify&target=vnc&fp=<MEASU
 ```
 
 The page verifies the report in the browser, shows `attested · <measurement> · chip <id>`, and
-renders the desktop over the stream. With `fp=` empty it says `NO FINGERPRINT PINNED` in the chip.
+renders the desktop over the stream. Without `fp=` the page refuses. To learn a build's fingerprint, add `nofp=1`; the chip then says `ANY BUILD ACCEPTED`.
 Screenshot that chip and the desktop for AB#592.
+
+## Tampered relay frame (AB#591)
+
+Stop the websockify from the step above first (it holds port 6090). Same page, with
+`tee/client/tamper_relay.py` between websockify and the box. The relay forwards the
+stream frames unchanged except one, where it flips a bit in the AES-GCM tag, and prints
+`TAMPER flipped <direction> frame <n> (<len> bytes)` when it does.
+
+```
+python3 tee/client/tamper_relay.py --listen 127.0.0.1:8445 --box BOXIP:8444 --direction down --after-seconds 20
+websockify --web tee/web 6090 127.0.0.1:8445
+T=$(python3 tee/client/mint_ticket.py issue --key $K --box BOXIP:8444 --target vnc)   # K as in Tickets below
+# browser: the URL from "See the desktop" plus the ticket as a fragment:
+# http://HOST:6090/index.html?relay=ws://HOST:6090/websockify&target=vnc&fp=<MEASUREMENT>&certs=<...>#ticket=$T
+```
+
+One ticket is one view (see Tickets below): every reload, including the one for `--direction up`,
+needs a freshly minted `T` in the URL. Reusing the old link is refused as a replay, not as a tamper.
+
+Expect: the chip shows `attested`, the desktop renders, then about 20 s in the relay prints the
+TAMPER line (if it does not, move the mouse: the flip waits for the next frame) and the page
+drops to `Disconnected`, `The stream dropped.`, `authentication failed`. Nothing after the flipped
+frame is drawn. Then the other direction: restart the relay with `--direction up`, mint a new
+`T`, open the URL with it; after 20 s move the mouse over the desktop (an idle viewer may send
+nothing up, and the flip waits for the next frame); the box console prints
+`STREAM auth failure, closing` and the page shows `Disconnected`, `The stream dropped.`,
+`pipe closed` (the box hung up; the browser saw no bad frame itself).
+`--frame 3` instead of `--after-seconds` flips the first DATA frame, before the desktop draws.
+
+Post on AB#591: the screenshot of the desktop with the chip, the screenshot after the drop, the
+relay log with the TAMPER lines, the box console line, and the MEASUREMENT.
 
 ## Drive it (CDP, host or Mac through a tunnel)
 
@@ -86,7 +117,7 @@ that opens more than one stream mints per connection rather than carrying a tick
 - `cdp_shim.py --ticket-key $K` mints one per connection, which is what CDP needs: Chromium opens a
   connection per target and reconnects freely, so a single `--ticket` serves the first and nothing
   after it.
-- viewer: add `&ticket=$T` to the URL (`--target vnc`). The page cannot mint (the mint key stays off
+- viewer: add `#ticket=$T` to the URL (after the `?...` part, as a fragment: the page removes it from the address bar; a link with a `ticket=` in the query is refused, and the page says the ticket must follow the `#`. Treat a ticket that was put in a query as used and mint a new one) (`--target vnc`). The page cannot mint (the mint key stays off
   the browser), so one ticket is one view: a reload needs a fresh `T`. AB#591's mint API is what
   removes that step.
 

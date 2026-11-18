@@ -147,7 +147,7 @@ const frame = (b) => { const h = new Uint8Array(4); new DataView(h.buffer).setUi
 
 export class SealedStream {
   /**
-   * verify: { certs: {ark, ask, vcek?}, allowedMeasurements: [], product, fetchVcek?: async (url) => Uint8Array, allowDev?: false }
+   * verify: { certs: {ark, ask, vcek?}, allowedMeasurements: [], allowAnyMeasurement?: false, minTcb?: {bl, tee, snp, ucode}, product, fetchVcek?: async (url) => Uint8Array, allowDev?: false }
    * The box's static key must be bound as sha256(static) in REPORT_DATA[32:64]; REPORT_DATA[0:32] is the
    * TLS SPKI hash from AB#361 (checked only if verify.tlsSpki is given).
    */
@@ -182,9 +182,9 @@ export class SealedStream {
       if (!equal(Uint8Array.from(atob(named.x25519_public_b64), (c) => c.charCodeAt(0)), rs)) throw new Error('binding names a different stream key than the box presented');
       if (verify.tlsSpki && bound.tls_spki_sha256 !== hex(await sha256(verify.tlsSpki))) throw new Error('binding names a different TLS key');
       const binding = { first: await sha256(bindingBytes), second: null };
-      s.attestation = await verifySnp({ report, certs, product: verify.product, binding, allowedMeasurements: verify.allowedMeasurements || [] });
+      s.attestation = await verifySnp({ report, certs, product: verify.product, binding, allowedMeasurements: verify.allowedMeasurements || [], allowAnyMeasurement: verify.allowAnyMeasurement === true, minTcb: verify.minTcb });
       s.attestation.binding = bound;
-      onstatus(`attested ${s.attestation.measurement.slice(0, 12)}${s.attestation.testMode ? ' (no fingerprint pinned)' : ''}`);
+      onstatus(`attested ${s.attestation.measurement.slice(0, 12)}${s.attestation.testMode ? ' (any build accepted)' : ''}`);
     }
     const prologue = cat(te.encode(PROLOGUE), await sha256(report || new Uint8Array(0)));
     const hs = await Handshake.create(prologue, rs);
@@ -218,7 +218,9 @@ export class SealedStream {
       this.sending = this.sending.then(async () => this.pipe.send(frame(await this.send_.encrypt(chunk)))).catch((e) => this.close(e));
     }
   }
-  close(err) { if (this.closed) return; this.closed = true; try { this.pipe.close(); } catch {} this.onclose?.(err); }
+  // The reason is kept: a stream can close before anyone listens (a tampered first frame lands while
+  // rfb.js is still loading), and websocketLike() hands that close over when noVNC attaches.
+  close(err) { if (this.closed) return; this.closed = true; this.error = err || null; try { this.pipe.close(); } catch {} this.onclose?.(err); }
 
   /** A WebSocket-shaped object for noVNC: `new RFB(el, SealedStream.websocketLike(stream))`. */
   static websocketLike(stream) {
@@ -233,11 +235,12 @@ export class SealedStream {
     // Deferred to a microtask so the bytes arrive after attach has returned and
     // RFB has run its open step, never from inside it.
     let handler = null;
-    const flush = () => { for (const pt of (stream.pending || []).splice(0)) stream.onmessage(pt); };
+    const flush = () => { for (const pt of (stream.pending || []).splice(0)) stream.onmessage(pt); if (stream.closed) stream.onclose(stream.error); };
     Object.defineProperty(ws, 'onmessage', { enumerable: true, configurable: true,
       get: () => handler, set: (f) => { handler = f; if (f) queueMicrotask(flush); } });
     stream.onmessage = (pt) => handler?.({ data: pt.buffer.slice(pt.byteOffset, pt.byteOffset + pt.byteLength) });
-    stream.onclose = (err) => { ws.readyState = 3; if (err) ws.onerror?.({ message: err.message }); ws.onclose?.({ code: err ? 1006 : 1000, reason: err?.message || '', wasClean: !err }); };
+    let closeDelivered = false;
+    stream.onclose = (err) => { if (closeDelivered) return; closeDelivered = true; ws.readyState = 3; if (err) ws.onerror?.({ message: err.message }); ws.onclose?.({ code: err ? 1006 : 1000, reason: err?.message || '', wasClean: !err }); };
     // No onopen here. readyState is 1 already, so RFB calls its open step itself
     // when it attaches (core/rfb.js, "if (this._sock.readyState === 'open')"); a
     // second open runs the handshake twice and fails the session.

@@ -46,13 +46,83 @@ if (existsSync(join(fx, 'report.bin')) && existsSync(join(fx, 'vcek.der'))) {
     binding = { first: await sha256(parseCert(read('cert.der')).spki), second: null };
   }
   try {
-    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowedMeasurements: [] });
+    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowedMeasurements: [], allowAnyMeasurement: true });
     check('real report: VCEK chain, signature, REPORT_DATA binding', r.ok, `measurement ${r.measurement.slice(0, 16)} testMode=${r.testMode}`);
   } catch (e) { check('real report', false, e.message); }
+  // The chip certificate names its firmware in four AMD extensions (12, 0, 28, 88 for the saved chip);
+  // they must equal the report's own numbers at 0x180, 0x181, 0x186, 0x187, and that check runs before the
+  // report's signature, so a changed byte is named as a firmware mismatch.
+  for (const [off, part] of [[0x180, 'bl'], [0x181, 'tee'], [0x186, 'snp'], [0x187, 'ucode']]) {
+    try {
+      const bad = report.slice(); bad[off] ^= 0x01;
+      await verifySnp({ report: bad, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true }); check(`firmware byte ${part} changed: refused`, false, 'accepted');
+    } catch (e) { check(`firmware byte ${part} changed: refused`, /firmware/i.test(e.message) && e.message.includes(part), e.message); }
+  }
+  // minTcb is a floor on the reported numbers, checked after the signature; parts left out are not checked.
+  const tcb = { bl: report[0x180], tee: report[0x181], snp: report[0x186], ucode: report[0x187] };
+  try {
+    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true, minTcb: tcb });
+    check('floor equal to the reported firmware: accepted', r.ok, JSON.stringify(tcb));
+  } catch (e) { check('floor equal to the reported firmware', false, e.message); }
+  for (const part of ['bl', 'tee', 'snp', 'ucode']) {
+    try {
+      await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true, minTcb: { [part]: tcb[part] + 1 } });
+      check(`floor one above the reported ${part}: refused`, false, 'accepted');
+    } catch (e) { check(`floor one above the reported ${part}: refused`, /below the floor/i.test(e.message) && e.message.includes(part), e.message); }
+  }
+  // The floor is checked for shape before anything is compared: only the four part names, each an integer 0 to 255.
+  // A part left out means no floor for that part (the other parts still apply).
+  const meas = rep.measurement;
+  for (const [label, floor] of [['an unknown key', { snp: 1, bogus: 1 }], ['NaN', { snp: NaN }], ['a negative', { snp: -1 }], ['a float', { snp: 1.5 }],
+      ['a string', { snp: '5' }], ['over 255', { snp: 256 }], ['null', { snp: null }], ['an array', [1, 2, 3, 4]], ['a number', 5], ['a string instead of an object', 'snp']]) {
+    try {
+      await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true, minTcb: floor }); check(`floor with ${label}: refused`, false, 'accepted');
+    } catch (e) { check(`floor with ${label}: refused`, /^invalid TCB floor/.test(e.message), e.message); }
+  }
+  try {
+    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true, minTcb: { snp: 28 } });
+    check('floor with one part only: the others are not checked', r.ok);
+    const e = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true, minTcb: {} });
+    check('an empty floor object is no floor', e.ok);
+  } catch (e) { check('partial floor', false, e.message); }
+
+  // Fingerprints: trimmed and lower-cased, then exactly 96 hex characters; anything else is refused up front.
+  try {
+    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowedMeasurements: [`  ${meas.toUpperCase()}\n`] });
+    check('an upper-case, padded fingerprint is accepted', r.ok && r.testMode === false);
+  } catch (e) { check('an upper-case, padded fingerprint is accepted', false, e.message); }
+  for (const [label, bad] of [['too short', meas.slice(0, 94)], ['too long', meas + '00'], ['not hex', 'zz' + meas.slice(2)], ['empty', '']]) {
+    try {
+      await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowedMeasurements: [meas, bad] }); check(`fingerprint ${label}: refused`, false, 'accepted');
+    } catch (e) { check(`fingerprint ${label}: refused`, /^invalid fingerprint/.test(e.message), e.message); }
+  }
+  // No fingerprint list is a refusal unless the caller says, in words, that any build will do.
+  for (const [label, extra] of [['no list', {}], ['empty list', { allowedMeasurements: [] }], ['allowAnyMeasurement false', { allowAnyMeasurement: false }]]) {
+    try {
+      await verifySnp({ report, certs: { ark, ask, vcek }, binding, ...extra }); check(`${label}: refused`, false, 'accepted');
+    } catch (e) { check(`${label}: refused`, /fingerprint/i.test(e.message), e.message); }
+  }
+  try {
+    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true });
+    check('allowAnyMeasurement: accepted and still reported as test mode', r.ok && r.testMode === true, `testMode=${r.testMode}`);
+  } catch (e) { check('allowAnyMeasurement', false, e.message); }
+  try {
+    const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowAnyMeasurement: true, allowedMeasurements: [rep.measurement] });
+    check('a list wins over the waiver: not test mode', r.ok && r.testMode === false);
+  } catch (e) { check('list with waiver', false, e.message); }
   try {
     const bad = report.slice(); bad[0x90] ^= 0x01;
     await verifySnp({ report: bad, certs: { ark, ask, vcek }, binding }); check('tampered measurement refused', false);
   } catch (e) { check('tampered measurement refused', /signature/.test(e.message), e.message); }
+  // Policy bits are signed, so a flipped bit also breaks the signature; the policy refusal has to come
+  // first for the message to name the policy. bit 19 = debug (byte 10, 0x08), bit 18 = migration (byte 10, 0x04).
+  for (const [bit, word, re] of [[0x08, 'debug', /debug/i], [0x04, 'migration', /migration/i]]) {
+    try {
+      const bad = report.slice(); bad[10] |= bit;
+      await verifySnp({ report: bad, certs: { ark, ask, vcek }, binding }); check(`${word} policy bit refused`, false);
+    } catch (e) { check(`${word} policy bit refused`, re.test(e.message), e.message); }
+  }
+  check('saved report policy has neither bit', (report[10] & 0x0c) === 0, `policy ${rep.policy}`);
   // The fingerprint pin: the viewer passes fp= and an unlisted image must not render.
   try {
     const r = await verifySnp({ report, certs: { ark, ask, vcek }, binding, allowedMeasurements: [rep.measurement] });

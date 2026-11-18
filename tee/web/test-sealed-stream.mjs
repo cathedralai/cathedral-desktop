@@ -14,14 +14,48 @@ const check = (name, ok, detail = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} 
 const box = spawn(boxd, ['-dev', '-noticket', '-tls', '127.0.0.1:18443', '-stream', '127.0.0.1:18444'], { stdio: ['ignore', 'ignore', 'pipe'] });
 await new Promise((res, rej) => { box.stderr.on('data', (d) => { if (/LISTEN/.test(d.toString())) res(); }); box.on('exit', (c) => rej(new Error(`boxd exited ${c}`))); setTimeout(() => rej(new Error('boxd did not listen')), 5000); });
 
-function tcpPipe(port, { tamper = false } = {}) {
+// A TCP data event is not a frame: boxd writes a frame as two writes (4-byte length, then body), so the events
+// can split anywhere. `mutate(index, frame)` therefore works on whole frames: the box's bytes are reassembled
+// into length-prefixed frames (index 0 is ATTEST, 1 is message 2, 2 is the first frame after the handshake),
+// each frame goes through `mutate` (return the bytes to pass on) and is delivered as one chunk.
+function tcpPipe(port, { mutate = null } = {}) {
   const sock = net.connect(port, '127.0.0.1');
-  let n = 0;
   const pipe = { onbytes: null, onclose: null, send: (b) => sock.write(b), close: () => sock.destroy(),
     ready: new Promise((res, rej) => { sock.on('connect', res); sock.on('error', rej); }) };
-  sock.on('data', (d) => { const u8 = new Uint8Array(d); if (tamper && ++n === 3) u8[u8.length - 1] ^= 0x01; pipe.onbytes?.(u8); });
+  let buf = new Uint8Array(0), index = 0;
+  sock.on('data', (d) => {
+    const u8 = new Uint8Array(d);
+    if (!mutate) { pipe.onbytes?.(u8); return; }
+    const all = new Uint8Array(buf.length + u8.length); all.set(buf); all.set(u8, buf.length); buf = all;
+    while (buf.length >= 4) {
+      const total = 4 + new DataView(buf.buffer, buf.byteOffset).getUint32(0);
+      if (buf.length < total) break;
+      const out = mutate(index++, buf.slice(0, total));
+      buf = buf.slice(total);
+      if (out.length) pipe.onbytes?.(out);
+    }
+  });
   sock.on('close', () => pipe.onclose?.());
   return pipe;
+}
+// Change the first frame after the handshake and pass everything else on untouched.
+const onFirstData = (change) => (i, frame) => (i === 2 ? change(frame) : frame);
+const flipBodyByte = onFirstData((f) => { const g = f.slice(); g[g.length - 1] ^= 0x01; return g; });
+const setLength = (delta) => onFirstData((f) => {
+  const g = f.slice(); const n = new DataView(g.buffer).getUint32(0) + delta;
+  new DataView(g.buffer).setUint32(0, n); return g;
+});
+// Open a stream through `mutate`, send one job, and report how the stream ended within `ms`.
+async function endOf(mutate, ms) {
+  const pipe = tcpPipe(18444, { mutate }); await pipe.ready;
+  const s = await SealedStream.open({ pipe, target: 'job', verify: { allowDev: true } });
+  const got = [];
+  s.onmessage = (pt) => got.push(td.decode(pt));
+  const closed = new Promise((res) => { s.onclose = (err) => res(err); });
+  s.send(te.encode('JOB 9\n'));
+  const err = await Promise.race([closed, new Promise((r) => setTimeout(() => r(null), ms))]);
+  s.close(); pipe.close();
+  return { err, got };
 }
 
 try {
@@ -37,14 +71,28 @@ try {
   s.close();
 } catch (e) { check('dev stream', false, e.message); }
 
+// A flipped bit inside the body of the first frame after the handshake. The frame reaches the client whole, so
+// the only way out is the AEAD check: no "pipe closed" alternative is needed, and one would hide a hang.
 try {
-  const pipe = tcpPipe(18444, { tamper: true }); await pipe.ready;
-  const s = await SealedStream.open({ pipe, target: 'job', verify: { allowDev: true } });
-  const closed = new Promise((res) => { s.onclose = (err) => res(err); });
-  s.send(te.encode('JOB 9\n'));
-  const err = await Promise.race([closed, new Promise((r) => setTimeout(() => r(new Error('no close')), 2000))]);
-  check('tampered frame closes the stream', /authentication failed|pipe closed/.test(err?.message || ''), err?.message);
-} catch (e) { check('tamper case', /authentication failed/.test(e.message), e.message); }
+  const { err, got } = await endOf(flipBodyByte, 2000);
+  check('tampered frame closes the stream', /authentication failed/.test(err?.message || ''), err?.message || 'no close');
+  check('a tampered frame delivers nothing', got.length === 0, JSON.stringify(got));
+} catch (e) { check('tamper case', false, e.message); }
+
+// The length prefix of the first frame after the handshake, one byte shorter and one byte longer.
+try {
+  const { err, got } = await endOf(setLength(-1), 2000);
+  check('a length one byte too short closes the stream as a failed authentication', /authentication failed/.test(err?.message || ''), err?.message || 'no close');
+  check('a length one byte too short delivers nothing', got.length === 0, JSON.stringify(got));
+} catch (e) { check('short length case', false, e.message); }
+try {
+  // TODAY'S BEHAVIOUR, not a requirement: the client reads a frame by its length, so a length one byte too long
+  // makes it wait for a byte the box never sends. Nothing closes and nothing is delivered. (An attacker who can
+  // do this can also drop the packets, which gives the same hang; the frame is never accepted.) If the client
+  // later adds a read timeout, change this case to expect a close.
+  const { err, got } = await endOf(setLength(+1), 1500);
+  check('a length one byte too long leaves the client waiting (today: no close, nothing delivered)', err === null && got.length === 0, err?.message || JSON.stringify(got));
+} catch (e) { check('long length case', false, e.message); }
 
 try {
   const pipe = tcpPipe(18444); await pipe.ready;

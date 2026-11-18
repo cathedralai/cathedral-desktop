@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>Cathedral sealed desktop · attested</title>
+<title>Cathedral sealed desktop</title>
 <style>
   :root { --bg: #000; --panel: #0B0D11; --line: #222831; --ink: #ECE9E1; --body: #D6D2C8; --mute: #8E9AA6; --acc: #F06E4A; --ok: #3DD68C; --bad: #FF6B7D; }
   * { box-sizing: border-box; }
@@ -41,38 +41,42 @@
 </main>
 <script type="module">
   // Query: relay=ws(s)://host:port (websockify to the box's 8444), target=vnc|job, room=ID,
-  //        fp=HEX[,HEX] allowed measurements (empty = test mode, shown), dev=1 accept a dev box,
+  //        fp=HEX[,HEX] allowed measurements (required: without it the page refuses unless nofp=1),
+  //        nofp=1 accept any build, shown as ANY BUILD ACCEPTED (to learn a fingerprint). There is no dev switch: a box without a report is always refused here.
   //        certs=URL base serving vcek.der for the chip (optional; else the box's certs or KDS via `kds=`),
+  // Fragment (after #, never sent to the relay, removed from the address bar on load):
   //        ticket=<single-use ticket from mint_ticket.py, one per view: a reload needs a fresh one>,
   //        vncpw=<only for a box whose x11vnc has a password>.
   import { SealedStream, websocketPipe } from './sealed-stream.js';
-  const q = new URLSearchParams(location.search);
-  const relay = q.get('relay') || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/websockify');
-  const target = q.get('target') || 'vnc';
-  const allowed = (q.get('fp') || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  import { readLink, cleanSearch, linkProblem } from './link.js';
+  const link = readLink(location);
+  // The fragment holds a single-use ticket and maybe a password; take it out of the address bar and history entry.
+  if (location.hash || link.misplaced.length) history.replaceState(null, '', location.pathname + cleanSearch(location.search));
+  const { relay, target, allowed } = link;
   const set = (id, cls, text) => { const el = document.getElementById(id); el.className = 'chip ' + cls; document.getElementById(id + '-text').textContent = text; };
   const gone = (title, why, detail = '') => { document.getElementById('gone-title').textContent = title; document.getElementById('gone-why').textContent = why; document.getElementById('gone-detail').textContent = detail; document.getElementById('gone').hidden = false; };
-  if (q.get('room')) { document.getElementById('room-id').textContent = q.get('room').slice(0, 8); document.getElementById('room').hidden = false; }
+  if (link.room) { document.getElementById('room-id').textContent = link.room.slice(0, 8); document.getElementById('room').hidden = false; }
   const fetchDer = async (url) => new Uint8Array(await (await fetch(url)).arrayBuffer());
-  const verify = { allowedMeasurements: allowed, allowDev: q.get('dev') === '1', product: q.get('product') || 'Genoa',
+  const verify = { allowedMeasurements: allowed, allowAnyMeasurement: link.nofp, product: link.product,
     certs: { ark: await fetchDer('./fixtures/amd-genoa-ark.der').catch(() => undefined), ask: await fetchDer('./fixtures/amd-genoa-ask.der').catch(() => undefined) },
-    fetchVcek: q.get('kds') ? (url) => fetchDer(q.get('kds') + encodeURIComponent(url)) : (q.get('certs') ? () => fetchDer(q.get('certs') + '/vcek.der') : undefined) };
+    fetchVcek: link.kds ? (url) => fetchDer(link.kds + encodeURIComponent(url)) : (link.certs ? () => fetchDer(link.certs + '/vcek.der') : undefined) };
   try {
+    const problem = linkProblem(link);
+    if (problem) throw Object.assign(new Error(problem.detail), problem);
     const pipe = websocketPipe(relay);
     await pipe.ready;
-    const stream = await SealedStream.open({ pipe, target, ticket: q.get('ticket') || '', verify, onstatus: (m) => {
+    const stream = await SealedStream.open({ pipe, target, ticket: link.ticket, verify, onstatus: (m) => {
       if (m.startsWith('attested')) set('attest', allowed.length ? 'on' : 'wait', m);
-      else if (m.startsWith('dev')) set('attest', 'off', 'dev box: not attested');
       else set('link', 'wait', m);
     } });
     const a = stream.attestation;
-    if (a?.ok) set('attest', allowed.length ? 'on' : 'wait', `attested · ${a.measurement.slice(0, 12)}… · chip ${a.chipId.slice(0, 8)}${a.testMode ? ' · NO FINGERPRINT PINNED' : ''}`);
+    if (a?.ok) set('attest', allowed.length ? 'on' : 'wait', `attested · ${a.measurement.slice(0, 12)}… · chip ${a.chipId.slice(0, 8)}${a.testMode ? ' · ANY BUILD ACCEPTED' : ''}`);
     set('link', 'on', `sealed ${target}`);
     window.sealedStream = stream;
     if (target === 'vnc') {
       const { default: RFB } = await import('./core/rfb.js');
       const rfb = new RFB(document.getElementById('screen'), SealedStream.websocketLike(stream),
-                          q.get('vncpw') ? { credentials: { password: q.get('vncpw') } } : undefined);
+                          link.vncpw ? { credentials: { password: link.vncpw } } : undefined);
       rfb.scaleViewport = true; rfb.background = '#000';
       rfb.addEventListener('connect', () => { set('link', 'on', `sealed ${target}`); rfb.focus(); });
       // A box whose x11vnc wants a password: ask for it rather than letting the session time out.
@@ -84,15 +88,16 @@
         rfb.sendCredentials({ password: pw });
       });
       rfb.addEventListener('securityfailure', (e) => { set('link', 'off', 'refused'); gone('Refused', 'The desktop refused the password.', e.detail?.reason || ''); });
-      rfb.addEventListener('disconnect', (e) => { set('link', 'off', 'offline'); gone('Disconnected', e.detail?.clean ? 'The box closed the desktop.' : 'The stream dropped.'); });
+      rfb.addEventListener('disconnect', (e) => { set('link', 'off', 'offline'); gone('Disconnected', stream.error || !e.detail?.clean ? 'The stream dropped.' : 'The box closed the desktop.', stream.error?.message || ''); });
     } else {
       stream.onmessage = (pt) => { const el = document.createElement('pre'); el.textContent = new TextDecoder().decode(pt); document.getElementById('screen').appendChild(el); };
+      stream.onclose = (err) => { set('link', 'off', 'offline'); gone('Disconnected', err ? 'The stream dropped.' : 'The box closed the stream.', err?.message || ''); };
       stream.send(new TextEncoder().encode('JOB 1\n'));
     }
   } catch (e) {
     set('link', 'off', 'refused');
     set('attest', 'off', 'not attested');
-    gone('Refused', 'This page will not show a desktop it cannot prove.', e.message);
+    gone(e.title || 'Refused', e.why || 'This page will not show a desktop it cannot check.', e.message);
   }
 </script>
 </body>

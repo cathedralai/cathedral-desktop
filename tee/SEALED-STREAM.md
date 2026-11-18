@@ -1,9 +1,11 @@
 # Sealed stream v1
 
-A byte pipe into a TEE box whose far end is proven by AMD, over any relay. The client (a browser or
-a native program) verifies the box's SEV-SNP report, runs a Noise handshake against the static key
-that report binds, and from then on every frame is AES-GCM ciphertext. Relays (websockify, the hotel
-bridge, a Cloudflare Worker, a tunnel) carry opaque frames and learn only sizes and timing.
+A byte pipe into a TEE box whose far end an AMD chip report vouches for, over any relay. The client
+(a browser or a native program) verifies the box's SEV-SNP report, runs a Noise handshake against
+the static key that report binds, and from then on every frame is AES-GCM ciphertext. Relays
+(websockify, the hotel bridge, a Cloudflare Worker, a tunnel) carry opaque frames. They see sizes
+and timing, and also the box's attestation report, which is sent in the clear before the handshake:
+the chip id, the build fingerprint (measurement) and the firmware level.
 
 Built on the AB#361 link (fresh keys per boot, report through configfs-tsm). Private track (M-H,
 AB#353, cards AB#591 to AB#593). Not production. 6 Nov 2026.
@@ -68,8 +70,14 @@ closes the stream. Max data frame 64 KiB. Rekey (Noise `REKEY`) every 2^20 frame
 3. VCEK signed by ASK, ASK by ARK, ARK by itself (RSA-PSS, SHA-384, salt 48), and sha256 of the ARK
    certificate DER equals the pin ctcli uses: Genoa `4c6598d1…3db2f1`, Milan `69d063b4…540bcd`.
    VCEK comes from the box's `certs` or from AMD KDS by chip id and TCB through a cache the client owns.
-4. MEASUREMENT (`report[0x90:0xC0]`) is in the client's allowed list, the fingerprint AB#363
-   publishes. An empty list is test mode and is shown as such, never as a pass.
+4. The VCEK's four AMD firmware extensions (`1.3.6.1.4.1.3704.1.3.1`, `.3.2`, `.3.3`, `.3.8`: bootloader,
+   TEE, SNP, microcode) equal the report's numbers at `0x180`, `0x181`, `0x186`, `0x187`, checked before the
+   report signature. An optional floor (`minTcb`, `min_tcb`) refuses firmware older than the caller allows.
+5. MEASUREMENT (`report[0x90:0xC0]`) is in the client's allowed list, the fingerprint AB#363
+   publishes. An empty list is refused unless the client sets the explicit waiver (`allowAnyMeasurement`, `allow_any_measurement`, the page's `nofp=1`, the shim's `--allow-any-measurement`); it then shows as test mode, never as a pass.
+6. The report's policy (8 bytes little-endian at `report[8:16]`) has neither bit 19 (debug) nor bit 18
+   (migration) set: a guest that allows either can be read or moved by the host. This is checked first,
+   before any signature work.
 
 A client that cannot verify shows why and sends nothing further.
 
@@ -98,14 +106,27 @@ goes mints as it goes (`mint_ticket.minter` passed to `open_stream(mint=...)`). 
 `-noticket` accepts an empty ticket; that mode is for the private spike only and the box prints
 `NOTICKET` at boot.
 
+The ticket key is Cathedral's. It decides who may open a stream to a box; it is not a customer
+key. See "Threats covered and not".
+
 ## Threats covered and not
 
 - Covered: a relay or network that reads or alters frames; a box that is not the measured image
   (measurement check); a box whose key is not the attested one (binding check); replay of the
   handshake (single-use ticket); a client that was never attested to (it fails closed).
-- Not covered: the host that runs the VM denying service; a client that chooses an empty
-  measurement list; Cathedral's control plane keeping the box's lifecycle. gVisor is not in this
+- Not covered: the host that runs the VM denying service; a client that sets the explicit
+  waiver instead of a fingerprint list (it then accepts any build); Cathedral's control plane
+  keeping the box's lifecycle. gVisor is not in this
   path: the box is the room.
+- Not covered: whoever serves the viewer page. The checking runs in the page's own code, so a party
+  that serves the page can change that code. In the runbook setup the relay serves the page, and
+  `link.js` defaults the relay to the page's own origin, so the relay operator is that party. Open
+  the page only from a source you trust, or run the native client.
+- Not covered, and the reason for careful wording: Cathedral itself. Cathedral signs the tickets
+  and starts the boxes, so Cathedral can open a stream to a box. The stream keeps relays, the
+  network and the host out of the bytes; it does not keep Cathedral out. A key that only the
+  customer holds is planned on AB#353 and is not built. Until it is live and checked, no page or
+  doc may say that no one, Cathedral included, can see inside a box.
 
 ## Implementation and tests
 
