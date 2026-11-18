@@ -16,7 +16,7 @@ error strings of the box daemon in `tee/boxd` that the page prints.
 | Path | Today | What closes it |
 |---|---|---|
 | P1 The host reads guest memory | Partly closed: the clients refuse debug and migration. No firmware floor is set. | Set the firmware floor value (an owner decision, not yet made). |
-| P2 The host boots another image | Closed on QEMU with kernel hashes. Open on Cloud Hypervisor: the host picks the kernel, the initrd and the command line, and open pull request 8 says the default stage0 enforces none of them. | Pass the stage0 control in pull request 8, or sell QEMU only. |
+| P2 The host boots another image | Closed on QEMU with kernel hashes. Open on Cloud Hypervisor: the host picks the kernel, the initrd and the command line, and `tee/MEASUREMENT-COVERAGE.md` says the default stage0 enforces none of them. | Run the stage0 negative control on an AMD host (`tee/MEASUREMENT-COVERAGE.md`, "Needs an AMD host"), or sell QEMU only. |
 | P3 Cathedral opens a stream with its ticket key | Open. | A customer key that opens the box instead (customer mode). |
 | P4 A keyless image opens on an empty ticket | Open. | The customer image holds no key and refuses an empty ticket. |
 | P5 The relay or the network reads frames | Closed. They still see sizes, timing and the report. | Not needed. |
