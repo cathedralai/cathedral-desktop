@@ -14,6 +14,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mint_ticket  # noqa: E402
+import sealed_stream  # noqa: E402
 from sealed_stream import Verify, open_stream, read_frame, write_frame  # noqa: E402
 
 BOXD = sys.argv[1] if len(sys.argv) > 1 else "./boxd"
@@ -26,7 +27,233 @@ def check(name, ok, detail=""):
     failures += 0 if ok else 1
 
 
+FX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures")
+
+
+async def customer_mode():
+    """AB#353 WP2, no boxd: a fake box sends the saved chip report; check what the client does with a customer key.
+
+    Handshake.write_message1 is wrapped only to read the plaintext of message 1 (the first message after HELLO)."""
+    rd = lambda n: open(os.path.join(FX, n), "rb").read()  # noqa: E731
+    with open(os.path.join(FX, "..", "testdata", "customer_host_data_v1.json")) as f:
+        vec = json.load(f)
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    ckey = Ed25519PrivateKey.generate()
+    key = mint_ticket.b64u(ckey.public_key().public_bytes(sealed_stream.serialization.Encoding.Raw, sealed_stream.serialization.PublicFormat.Raw))
+    good_ticket = mint_ticket.issue(ckey, box_static=b"\0" * 32, target="job")
+    other_ticket = mint_ticket.issue(Ed25519PrivateKey.generate(), box_static=b"\0" * 32, target="job")
+    binding = rd("binding.json").decode()
+    b64u = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()  # noqa: E731
+    static = base64.b64decode(json.loads(binding)["sealed_stream"]["x25519_public_b64"])
+    report = rd("report.bin")
+    measurement = report[0x90:0xC0].hex()
+    att_full = json.dumps({"v": 1, "static": b64u(static), "report": b64u(report), "binding": binding}).encode()
+    att_nore = json.dumps({"v": 1, "static": b64u(static)}).encode()
+    kw = dict(ark_der=rd("amd-genoa-ark.der"), ask_der=rd("amd-genoa-ask.der"), vcek_der=rd("vcek.der"))
+    listed = {"allowed_measurements": [measurement]}
+
+    async def run(att=att_full, vkw=None, mint=None, tamper=None, ticket=None):
+        """One connection to a fake box. Returns (error, frames the client wrote, plaintexts of message 1)."""
+        got, payloads = [], []
+
+        async def box(r, w):
+            try:
+                got.append(await read_frame(r))
+                write_frame(w, att)
+                await w.drain()
+                got.append(await read_frame(r))  # message 1, if the client sends one
+            except Exception:  # noqa: BLE001
+                pass
+            w.close()
+
+        srv = await asyncio.start_server(box, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        orig = sealed_stream.Handshake.write_message1
+
+        def spy(self, payload):
+            payloads.append(payload)
+            return orig(self, payload)
+
+        sealed_stream.Handshake.write_message1 = spy
+        err = None
+        try:
+            r, w = await asyncio.open_connection("127.0.0.1", port)
+            try:
+                v = Verify(**kw, **(vkw or {}))
+                if tamper:
+                    tamper(v)
+                tk = ticket if ticket is not None else (good_ticket if v.customer_key is not None and mint is None else "")
+                await open_stream(r, w, target="job", verify=v, mint=mint, ticket=tk)
+            except Exception as e:  # noqa: BLE001
+                err = f"{type(e).__name__}: {e}"
+            w.close()
+        except Exception as e:  # noqa: BLE001
+            err = f"{type(e).__name__}: {e}"
+        finally:
+            sealed_stream.Handshake.write_message1 = orig
+            srv.close()
+            await srv.wait_closed()
+        return err, got, payloads
+
+    err, got, payloads = await run(vkw={"customer_key": key, **listed})
+    check("customer key set, fixture HOST_DATA zero: refused with a named reason", "HOST_DATA is zero" in (err or ""), str(err))
+    check("a refused check writes only HELLO, no message 1, no retry", len(got) == 1 and not payloads, f"frames {len(got)} message1 {len(payloads)}")
+    errs = [(await run(vkw={"customer_key": key, **listed})) for _ in range(2)]
+    check("a second open (reconnect) runs the customer check again", all("HOST_DATA is zero" in (e[0] or "") and len(e[1]) == 1 for e in errs), str([e[0] for e in errs]))
+
+    # The waivers, set after the options were built so open_stream's own guard is what is under test. allow_dev skips verify_snp
+    # entirely today, so it is tried against a box that presents no report.
+    err, got, payloads = await run(att=att_nore, vkw={"customer_key": key, **listed}, tamper=lambda v: setattr(v, "allow_dev", True))
+    check("customer key + allow_dev, box with no report: refused by name, no message 1", "customer mode refuses allow_dev" in (err or "") and not payloads, str(err))
+    err, got, payloads = await run(vkw={"customer_key": key, **listed}, tamper=lambda v: setattr(v, "allow_dev", True))
+    check("customer key + allow_dev, box with a report: refused by name", "customer mode refuses allow_dev" in (err or "") and not payloads, str(err))
+    err, got, payloads = await run(vkw={"customer_key": key, **listed}, tamper=lambda v: setattr(v, "allow_any_measurement", True))
+    check("customer key + allow_any_measurement: refused by name", "customer mode" in (err or "") and "allow_any_measurement" in (err or "") and not payloads, str(err))
+    err, got, payloads = await run(vkw={"customer_key": key, **listed}, tamper=lambda v: setattr(v, "allowed_measurements", []))
+    check("customer key + empty fingerprint list: refused by name", "customer mode needs a fingerprint list" in (err or "") and not payloads, str(err))
+
+    err, got, payloads = await run(vkw={"customer_key": key, **listed}, ticket="")
+    check("customer key + empty ticket: refused by name before anything is written", "customer mode needs a ticket" in (err or "") and not got, f"{err} frames {len(got)}")
+    err, got, payloads = await run(vkw={"customer_key": key, **listed}, ticket=other_ticket)
+    check("customer key + ticket signed by another key: usage error before anything is written", "signed by the customer key" in (err or "") and not got, f"{err} frames {len(got)}")
+
+    # mint(rs) runs only after the report is verified: a failing report mints nothing and sends nothing after HELLO.
+    minted = []
+
+    def mint(rs):
+        minted.append(rs)
+        return "T"
+
+    bad = bytearray(report)
+    bad[0x90] ^= 1
+    bad_att = json.dumps({"v": 1, "static": b64u(static), "report": b64u(bytes(bad)), "binding": binding}).encode()
+    minted.clear()
+    err, got, payloads = await run(att=bad_att, vkw={"allow_any_measurement": True}, mint=mint)
+    check("a failing report: no ticket is minted and nothing is sent after HELLO", not minted and len(got) == 1 and not payloads and "report signature" in (err or ""), f"minted {len(minted)} frames {len(got)} {err}")
+    minted.clear()
+    err, got, payloads = await run(vkw={"customer_key": key, **listed}, mint=mint)
+    check("a customer refusal also mints nothing", not minted and len(got) == 1, f"minted {len(minted)}")
+    minted.clear()
+    err, got, payloads = await run(vkw={"allow_any_measurement": True}, mint=mint)
+    check("a good report: the ticket is minted once, for the box's static key, and message 1 carries it",
+          minted == [static] and len(payloads) == 1 and json.loads(payloads[0])["ticket"] == "T", f"minted {len(minted)} {payloads}")
+
+    err, got, payloads = await run(vkw={"allow_any_measurement": True})
+    check("no customer key: message 1 is exactly {\"target\",\"ticket\"}, no customer field",
+          len(payloads) == 1 and payloads[0] == b'{"target": "job", "ticket": ""}', str(payloads))
+    try:
+        check("message 1 payload with a key adds only the customer field",
+              sealed_stream.message1_payload("job", "T", key) == json.dumps({"target": "job", "ticket": "T", "customer": key}).encode())
+        check("message 1 payload without a key is byte for byte the old one",
+              sealed_stream.message1_payload("job", "T") == json.dumps({"target": "job", "ticket": "T"}).encode())
+    except Exception as e:  # noqa: BLE001
+        check("message 1 payload", False, f"{type(e).__name__}: {e}")
+
+    for label, bad_key in (("empty string", ""), ("not base64url", "!" * 43), ("31 bytes", b64u(bytes(31))), ("33 bytes", b64u(bytes(33)))):
+        # The field is set after Verify is built, so the check in open_stream is what is under test.
+        sent = []
+
+        class W:
+            def write(self, b):
+                sent.append(b)
+
+            async def drain(self):
+                pass
+
+            def close(self):
+                pass
+
+        v = Verify(**kw, **listed)
+        v.customer_key = bad_key
+        try:
+            await asyncio.wait_for(open_stream(asyncio.StreamReader(), W(), target="job", verify=v), 2)
+            check(f"customer key {label}: usage error before anything is written", False, "accepted")
+        except ValueError as e:
+            check(f"customer key {label}: usage error before anything is written", "invalid customer key" in str(e) and not sent, f"{e} writes {len(sent)}")
+        except Exception as e:  # noqa: BLE001
+            check(f"customer key {label}: usage error before anything is written", False, f"{type(e).__name__}: {e} writes {len(sent)}")
+
+
+async def marker_flow():
+    """The box side of the handshake, played by the test, for a client that holds a customer key. The report check is replaced
+    inside this test (verify_snp is patched); no hook exists in product code. Message 2 with the marker gives a bound stream;
+    without it the client closes, sends nothing more, and never sets the bound flag."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+    ss = sealed_stream
+    raw = lambda k: k.public_bytes(ss.serialization.Encoding.Raw, ss.serialization.PublicFormat.Raw)  # noqa: E731
+    ckey = Ed25519PrivateKey.generate()
+    field = mint_ticket.b64u(raw(ckey.public_key()))
+    ticket = mint_ticket.issue(ckey, box_static=b"\0" * 32, target="job")
+    fake_report = os.urandom(0x2A0 + 144)
+
+    async def play(ready: bytes):
+        static = X25519PrivateKey.generate()
+        spub = raw(static.public_key())
+        extra = []
+        shared = {"ok": True, "measurement": "ab" * 48}  # what the patched verify returns; open_stream adds the bound flag to it
+
+        async def box(r, w):
+            try:
+                await read_frame(r)  # HELLO
+                write_frame(w, json.dumps({"v": 1, "static": mint_ticket.b64u(spub), "report": mint_ticket.b64u(fake_report), "binding": "{}"}).encode())
+                await w.drain()
+                msg1 = await read_frame(r)
+                # Noise NK responder, the mirror of Handshake
+                h = ss.PROTOCOL.ljust(32, b"\0")
+                ck = h
+                mix = lambda d: ss.hashlib.sha256(h + d).digest()  # noqa: E731
+                h = mix(ss.PROLOGUE + ss.hashlib.sha256(fake_report).digest())
+                h = mix(spub)
+                re = msg1[:32]
+                h = mix(re)
+                ck, k = ss._hkdf2(ck, static.exchange(ss.X25519PublicKey.from_public_bytes(re)))
+                h = mix(msg1[32:])
+                e = X25519PrivateKey.generate()
+                epub = raw(e.public_key())
+                h = mix(epub)
+                ck, k = ss._hkdf2(ck, e.exchange(ss.X25519PublicKey.from_public_bytes(re)))
+                ct = ss.AESGCM(k).encrypt(b"\0" * 12, ready, h)
+                write_frame(w, epub + ct)
+                await w.drain()
+                k1, k2 = ss._hkdf2(ck, b"")
+                while True:  # anything the client sends after message 1 lands here
+                    extra.append(await read_frame(r))
+            except asyncio.IncompleteReadError:
+                pass  # the client closed
+            w.close()
+
+        srv = await asyncio.start_server(box, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        orig = ss.verify_snp
+        ss.verify_snp = lambda *a, **k: shared
+        result = None
+        try:
+            r, w = await asyncio.open_connection("127.0.0.1", port)
+            try:
+                s = await open_stream(r, w, target="job", verify=Verify(customer_key=field, allowed_measurements=["ab" * 48]), ticket=ticket)
+                result = s
+            except Exception as ex:  # noqa: BLE001
+                result = f"{type(ex).__name__}: {ex}"
+            await asyncio.sleep(0.1)
+            w.close()
+        finally:
+            ss.verify_snp = orig
+            srv.close()
+            await srv.wait_closed()
+        return result, extra, shared
+
+    res, extra, shared = await play(b'{"ok":true,"mode":"customer"}')
+    check("marker flow: message 2 with the marker gives a stream marked bound", not isinstance(res, str) and res is not None and res.attestation.get("customer_bound") is True, str(res))
+    res, extra, shared = await play(b'{"ok":true}')
+    check("marker flow: message 2 without the marker is refused with the named reason", isinstance(res, str) and "did not confirm customer mode" in res, str(res))
+    check("marker flow: nothing more is sent after the refusal", not extra, f"{len(extra)} frames")
+    check("marker flow: the bound flag is never set", "customer_bound" not in shared, str(shared))
+
+
 async def main():
+    await customer_mode()
+    await marker_flow()
     box = subprocess.Popen([BOXD, "-dev", "-noticket", "-tls", "127.0.0.1:28443", "-stream", "127.0.0.1:28444"], stderr=subprocess.PIPE, text=True)
     for line in box.stderr:
         if "LISTEN" in line:

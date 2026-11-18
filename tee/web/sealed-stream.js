@@ -9,7 +9,7 @@
 // reassembled here, so WebSocket relays (websockify) may split or merge TCP chunks freely.
 // `SealedStream.websocketLike(stream)` returns a WebSocket-shaped object that noVNC's RFB accepts.
 
-import { verifySnp, parseReport, kdsVcekUrl, sha256, equal, hex } from './snp-verify.js';
+import { verifySnp, parseReport, kdsVcekUrl, sha256, equal, hex, checkCustomerOptions, checkCustomerTicket } from './snp-verify.js';
 
 const subtle = globalThis.crypto.subtle;
 const PROTOCOL = 'Noise_NK_25519_AESGCM_SHA256';
@@ -79,7 +79,7 @@ class CipherState {
   }
 }
 
-class Handshake {
+export class Handshake {
   static async create(prologue, rs) {
     const hs = new Handshake();
     const name = te.encode(PROTOCOL);
@@ -145,6 +145,17 @@ class Frames {
 }
 const frame = (b) => { const h = new Uint8Array(4); new DataView(h.buffer).setUint32(0, b.length); return cat(h, b); };
 
+/** Message 1's plaintext. The customer field is present only when a customer key is set, so off is byte for byte what it was. */
+export function message1Payload(target, ticket, customerKey) {
+  return JSON.stringify(customerKey === undefined ? { target, ticket } : { target, ticket, customer: customerKey });
+}
+
+/** Message 2 for a client with a customer key must carry mode "customer"; a client without one ignores the member. */
+export function checkReady(ready, customerKey) {
+  if (customerKey === undefined) return;
+  if (ready?.mode !== 'customer') throw new Error('the box did not confirm customer mode');
+}
+
 export class SealedStream {
   /**
    * verify: { certs: {ark, ask, vcek?}, allowedMeasurements: [], allowAnyMeasurement?: false, minTcb?: {bl, tee, snp, ucode}, product, fetchVcek?: async (url) => Uint8Array, allowDev?: false }
@@ -152,6 +163,10 @@ export class SealedStream {
    * TLS SPKI hash from AB#361 (checked only if verify.tlsSpki is given).
    */
   static async open({ pipe, target, ticket = '', verify, onstatus = () => {} }) {
+    // Usage errors and waivers in customer mode are refused before any byte is written.
+    const customerPub = checkCustomerOptions({ customerKey: verify?.customerKey, allowDev: verify?.allowDev, allowAnyMeasurement: verify?.allowAnyMeasurement, allowedMeasurements: verify?.allowedMeasurements });
+    // The ticket must be signed by the customer key, and that is checked before the first byte is written.
+    if (customerPub) await checkCustomerTicket(ticket, customerPub);
     const frames = new Frames();
     pipe.onbytes = (b) => frames.push(b);
     pipe.onclose = () => frames.fail(new Error('pipe closed'));
@@ -182,15 +197,18 @@ export class SealedStream {
       if (!equal(Uint8Array.from(atob(named.x25519_public_b64), (c) => c.charCodeAt(0)), rs)) throw new Error('binding names a different stream key than the box presented');
       if (verify.tlsSpki && bound.tls_spki_sha256 !== hex(await sha256(verify.tlsSpki))) throw new Error('binding names a different TLS key');
       const binding = { first: await sha256(bindingBytes), second: null };
-      s.attestation = await verifySnp({ report, certs, product: verify.product, binding, allowedMeasurements: verify.allowedMeasurements || [], allowAnyMeasurement: verify.allowAnyMeasurement === true, minTcb: verify.minTcb });
+      s.attestation = await verifySnp({ report, certs, product: verify.product, binding, allowedMeasurements: verify.allowedMeasurements || [], allowAnyMeasurement: verify.allowAnyMeasurement === true, minTcb: verify.minTcb, customerKey: verify.customerKey });
       s.attestation.binding = bound;
       onstatus(`attested ${s.attestation.measurement.slice(0, 12)}${s.attestation.testMode ? ' (any build accepted)' : ''}`);
     }
     const prologue = cat(te.encode(PROLOGUE), await sha256(report || new Uint8Array(0)));
     const hs = await Handshake.create(prologue, rs);
-    pipe.send(frame(await hs.writeMessage1(te.encode(JSON.stringify({ target, ticket })))));
+    pipe.send(frame(await hs.writeMessage1(te.encode(message1Payload(target, ticket, verify?.customerKey)))));
     const ready = JSON.parse(td.decode(await hs.readMessage2(await frames.next())));
     if (!ready.ok) throw new Error(`box refused: ${ready.error}`);
+    // Only a box that says, inside this authenticated answer, that it is in customer mode may be called bound to the customer's key.
+    try { checkReady(ready, verify?.customerKey); } catch (e) { pipe.close(); throw e; }
+    if (verify?.customerKey !== undefined) s.attestation.customerBound = true;
     const { send, recv } = await hs.split();
     s.send_ = send; s.recv_ = recv; s.target = target;
     onstatus(`open ${target}`);

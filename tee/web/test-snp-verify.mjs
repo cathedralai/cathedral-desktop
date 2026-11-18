@@ -137,5 +137,123 @@ if (existsSync(join(fx, 'report.bin')) && existsSync(join(fx, 'vcek.der'))) {
   console.log('skip real report checks: tee/fixtures/report.bin and vcek.der not present yet');
 }
 
+// ---- customer mode (AB#353 WP2): the report's HOST_DATA must equal sha256("cathedral-tee-customer/v1\0" || customer key).
+// Namespace import so a missing export fails its own check instead of the whole file.
+const sv = await import('./snp-verify.js');
+const vec = JSON.parse(readFileSync(join(fx, '..', 'testdata', 'customer_host_data_v1.json'), 'utf8'));
+const unhex = (h) => Uint8Array.from(h.match(/../g) || [], (x) => parseInt(x, 16));
+const kPub = unhex(vec.customer.public_key_hex);
+const b64uOf = (u8) => Buffer.from(u8).toString('base64url');
+const fails = async (name, fn, re) => {
+  try { await fn(); check(name, false, 'accepted'); } catch (e) { check(name, re.test(e.message), e.message); }
+};
+
+// The shared vector: same file as the Python test; JS rebuilds it from the key.
+try {
+  check('vector: preimage is domain, zero byte, key', vec.customer.preimage_hex === vec.domain_hex + vec.customer.public_key_hex && vec.domain_hex.endsWith('00'));
+  check('vector: JS rebuilds HOST_DATA from the key', hex(await sv.customerHostData(kPub)) === vec.customer.host_data_hex, hex(await sv.customerHostData(kPub)));
+  check('vector: file value is sha256 of the stored preimage', hex(await sha256(unhex(vec.customer.preimage_hex))) === vec.customer.host_data_hex);
+  check('vector: a different key gives the other stored value', hex(await sv.customerHostData(unhex(vec.other_customer.public_key_hex))) === vec.other_customer.host_data_hex);
+  check('vector: the domain without its trailing zero byte gives a different value', vec.without_trailing_zero.host_data_hex !== vec.customer.host_data_hex
+    && hex(await sha256(unhex(vec.without_trailing_zero.preimage_hex))) === vec.without_trailing_zero.host_data_hex);
+  check('vector: the stored unlabelled sha256(key) differs and is what sha256 of the bare key gives', vec.unlabelled_sha256_of_key.host_data_hex !== vec.customer.host_data_hex
+    && hex(await sha256(kPub)) === vec.unlabelled_sha256_of_key.host_data_hex);
+  check('vector: the stored b64url form decodes to the stored key', hex(sv.parseCustomerKey(vec.customer.public_key_b64u)) === vec.customer.public_key_hex);
+} catch (e) { check('vector', false, e.message); }
+
+// The pure check: checkCustomerHostData(hostData bytes, customer public key bytes). A check that only tests "not zero" fails the cases below.
+{
+  const good = unhex(vec.customer.host_data_hex);
+  const chk = (hd, pub = kPub) => sv.checkCustomerHostData(hd, pub);
+  try { await chk(good); check('check: HOST_DATA for this key is accepted', true); } catch (e) { check('check: HOST_DATA for this key is accepted', false, e.message); }
+  await fails('check: HOST_DATA for a different customer key is refused', () => chk(unhex(vec.other_customer.host_data_hex)), /HOST_DATA.*(different|does not match)/i);
+  await fails('check: all-zero HOST_DATA is refused as zero', () => chk(new Uint8Array(32)), /HOST_DATA.*zero/i);
+  await fails('check: sha256(key) without the label is refused', () => chk(unhex(vec.unlabelled_sha256_of_key.host_data_hex)), /HOST_DATA.*(different|does not match)/i);
+  await fails('check: the value built without the trailing zero byte is refused', () => chk(unhex(vec.without_trailing_zero.host_data_hex)), /HOST_DATA.*(different|does not match)/i);
+  await fails('check: a 31-byte HOST_DATA is refused', () => chk(good.slice(0, 31)), /HOST_DATA/);
+  await fails('check: a 33-byte HOST_DATA is refused', () => chk(new Uint8Array([...good, 0])), /HOST_DATA/);
+  await fails('check: a 31-byte customer key is a usage error', () => chk(good, kPub.slice(0, 31)), /^invalid customer key/);
+  let all = true;
+  for (let i = 0; i < 32; i++) for (const bit of [0x01, 0x80]) {
+    const h = good.slice(); h[i] ^= bit;
+    try { await chk(h); all = false; } catch { /* refused */ }
+  }
+  check('check: comparison is exact, a one-bit change in any of the 32 bytes is refused', all);
+}
+
+{
+  const rBytes = read('report.bin');
+  const rb = { first: await sha256(new Uint8Array(readFileSync(join(fx, 'binding.json')))), second: null };
+  const base = { report: rBytes, certs: { ark, ask, vcek: read('vcek.der') }, binding: rb };
+  const meas = parseReport(rBytes).measurement;
+  const listed = { allowedMeasurements: [meas] };
+  const withHostData = (hex32) => { const b = rBytes.slice(); b.set(unhex(hex32), 0xC0); return b; };
+  const key = vec.customer.public_key_b64u;
+
+  check('saved report HOST_DATA is all zero (today\'s fixture)', parseReport(rBytes).hostData === '00'.repeat(32));
+  await fails('customer key set, HOST_DATA zero: refused, names HOST_DATA and zero', () => verifySnp({ ...base, ...listed, customerKey: key }), /HOST_DATA.*zero/i);
+  // Right value in the report but the bytes are no longer the ones the chip signed: every earlier check still runs.
+  await fails('customer key set, right HOST_DATA in an unsigned edit: the signature check still refuses', () => verifySnp({ ...base, report: withHostData(vec.customer.host_data_hex), ...listed, customerKey: key }), /signature/);
+  await fails('customer key set, a wrong measurement is refused before HOST_DATA is looked at', () => verifySnp({ ...base, allowedMeasurements: ['ff'.repeat(48)], customerKey: key }), /not an allowed fingerprint/);
+
+  // Customer mode refuses every waiver: the host picks HOST_DATA freely, so it binds the key only with the build checked too.
+  await fails('customer key set + allowAnyMeasurement: refused by name', () => verifySnp({ ...base, allowAnyMeasurement: true, customerKey: key }), /customer mode.*allowAnyMeasurement/i);
+  await fails('customer key set + allowAnyMeasurement + a list: still refused', () => verifySnp({ ...base, ...listed, allowAnyMeasurement: true, customerKey: key }), /customer mode.*allowAnyMeasurement/i);
+  await fails('customer key set + empty fingerprint list: refused by name', () => verifySnp({ ...base, allowedMeasurements: [], customerKey: key }), /customer mode.*fingerprint list/i);
+  await fails('customer key set + no fingerprint list: refused by name', () => verifySnp({ ...base, customerKey: key }), /customer mode.*fingerprint list/i);
+  await fails('customer key set + allowDev: refused by name', () => verifySnp({ ...base, ...listed, allowDev: true, customerKey: key }), /customer mode.*allowDev/i);
+
+  // Input shape: a usage error before anything else, never a silent "no customer mode".
+  const shapes = [['empty string', ''], ['null', null], ['not base64url', '!'.repeat(43)], ['standard base64 characters', key.replace(/-/g, '+').replace(/_/g, '/') + '/'],
+    ['padded', key + '='], ['31 bytes', b64uOf(kPub.slice(0, 31))], ['33 bytes', b64uOf(new Uint8Array([...kPub, 0]))], ['a number', 5], ['a byte array', kPub], ['non-canonical trailing bits', key.slice(0, 42) + 'B']];
+  for (const [label, bad] of shapes) {
+    await fails(`customer key ${label}: usage error`, () => verifySnp({ ...base, ...listed, customerKey: bad }), /^invalid customer key/);
+  }
+  // Off by default: undefined is the only way to leave it off, and the result is what main returns.
+  try {
+    const off = await verifySnp({ ...base, allowAnyMeasurement: true });
+    const undef = await verifySnp({ ...base, allowAnyMeasurement: true, customerKey: undefined });
+    check('no customer key: same result as before, including fixtures with zero HOST_DATA and the waiver', off.ok && JSON.stringify(off) === JSON.stringify(undef) && !('customer' in off) && !('hostData' in off), Object.keys(off).join(','));
+    const pinned = await verifySnp({ ...base, ...listed });
+    check('no customer key: pinned fingerprint still accepted', pinned.ok && pinned.testMode === false);
+  } catch (e) { check('no customer key: same result as before', false, e.message); }
+}
+
+// ---- review fixes (AB#353): weak customer keys, ticket under the customer key, HOST_DATA offset.
+{
+  const weak = [...vec.weak_keys.small_order_hex, ...vec.weak_keys.non_canonical_hex];
+  check('vector: 8 small-order encodings are listed', vec.weak_keys.small_order_hex.length === 8);
+  for (const h of weak) {
+    const k = b64uOf(unhex(h));
+    await fails(`weak customer key ${h.slice(0, 8)}..${h.slice(-4)}: usage error`, () => sv.parseCustomerKey(k), /^invalid customer key/);
+    await fails(`weak customer key ${h.slice(0, 8)}..${h.slice(-4)}: verifySnp refuses it before anything else`, () => verifySnp({ report: read('report.bin'), certs: { ark, ask, vcek: read('vcek.der') }, binding: null, allowedMeasurements: ['ab'.repeat(48)], customerKey: k }), /^invalid customer key/);
+    await fails(`weak customer key ${h.slice(0, 8)}..${h.slice(-4)}: the pure check refuses it`, () => sv.checkCustomerHostData(unhex(vec.customer.host_data_hex), unhex(h)), /^invalid customer key/);
+  }
+  try { sv.parseCustomerKey(vec.customer.public_key_b64u); check('a real customer key is still accepted', true); } catch (e) { check('a real customer key is still accepted', false, e.message); }
+
+  // HOST_DATA is bytes 0xC0 to 0xDF. A synthetic buffer whose neighbours differ, so a wrong offset cannot pass.
+  const buf = new Uint8Array(sv.REPORT_LEN);
+  buf.fill(0x11, 0xA0, 0xC0); buf.fill(0x22, 0xC0, 0xE0); buf.fill(0x33, 0xE0, 0x100);
+  try {
+    check('reportHostData reads bytes 0xC0 to 0xDF', hex(sv.reportHostData(buf)) === '22'.repeat(32), hex(sv.reportHostData(buf)));
+    check('parseReport reports the same HOST_DATA', parseReport(buf).hostData === '22'.repeat(32));
+  } catch (e) { check('reportHostData', false, e.message); }
+
+  // The ticket the client sends in customer mode: present, and signed by the customer key.
+  const kp = await globalThis.crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+  const kpOther = await globalThis.crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+  const rawPub = new Uint8Array(await globalThis.crypto.subtle.exportKey('raw', kp.publicKey));
+  const mk = async (pair, body = '{"box":"x","target":"vnc"}') => {
+    const bb = new TextEncoder().encode(body);
+    const sig = new Uint8Array(await globalThis.crypto.subtle.sign('Ed25519', pair.privateKey, bb));
+    return `${b64uOf(bb)}.${b64uOf(sig)}`;
+  };
+  try { await sv.checkCustomerTicket(await mk(kp), rawPub); check('ticket signed by the customer key is accepted', true); } catch (e) { check('ticket signed by the customer key is accepted', false, e.message); }
+  await fails('empty ticket in customer mode: refused by name', () => sv.checkCustomerTicket('', rawPub), /customer mode needs a ticket/);
+  await fails('ticket signed by another key: usage error', async () => sv.checkCustomerTicket(await mk(kpOther), rawPub), /customer mode.*signed by the customer key/);
+  await fails('ticket with a changed body: refused', async () => { const t = await mk(kp); await sv.checkCustomerTicket(`${b64uOf(new TextEncoder().encode('{"box":"y"}'))}.${t.split('.')[1]}`, rawPub); }, /signed by the customer key/);
+  for (const bad of ['abc', 'a.b.c', '!!.??', 'AAAA.AAAA']) await fails(`malformed ticket ${JSON.stringify(bad)}: refused`, () => sv.checkCustomerTicket(bad, rawPub), /customer mode/);
+}
+
 console.log(failures ? `${failures} failure(s)` : 'all checks passed');
 process.exit(failures ? 1 : 0);

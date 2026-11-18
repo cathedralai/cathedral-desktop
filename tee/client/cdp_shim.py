@@ -4,7 +4,7 @@ Chromium debugging port, so Playwright, browser-use or any CDP client connects t
 bytes cross the relay as ciphertext bound to the box's attestation.
 
     python3 cdp_shim.py --box HOST:8444 --listen 127.0.0.1:9333 --ticket-key ticket.key \
-                        (--measurement HEX ... | --allow-any-measurement) [--allow-dev]
+                        (--measurement HEX ... | --allow-any-measurement) [--allow-dev] [--customer-key KEY]
     playwright: chromium.connect_over_cdp("http://127.0.0.1:9333")
 
 Chromium builds the webSocketDebuggerUrl from the Host header it sees, so the client keeps coming
@@ -18,8 +18,10 @@ import asyncio
 import sys
 import time
 
-from mint_ticket import minter
-from sealed_stream import Verify, open_stream
+from cryptography.hazmat.primitives import serialization
+
+from mint_ticket import load_key, minter
+from sealed_stream import Verify, check_customer_ticket, open_stream, parse_customer_key
 
 
 async def handle(local_r: asyncio.StreamReader, local_w: asyncio.StreamWriter, box: tuple[str, int], verify: Verify, target: str, ticket: str, mint=None):
@@ -68,7 +70,39 @@ async def main():
     ap.add_argument("--product", default="Genoa")
     ap.add_argument("--allow-any-measurement", action="store_true", help="accept any build when no --measurement is given (to learn a fingerprint; tests only)")
     ap.add_argument("--allow-dev", action="store_true", help="accept a dev box with no report (tests only)")
+    ap.add_argument("--customer-key", help="customer mode: the customer's public key, unpadded base64url of 32 bytes; refuses any box not launched for it, and every waiver")
     a = ap.parse_args()
+    ticket_signer = None
+    if a.ticket_key:
+        # A key file that is missing, unreadable or not a key is a usage error: one line, and never the file's contents.
+        try:
+            ticket_signer = load_key(a.ticket_key)
+        except OSError as e:
+            ap.error(f"--ticket-key: cannot read the key file ({type(e).__name__})")
+        except ValueError:
+            ap.error("--ticket-key: the file is not a 32-byte Ed25519 private key")
+    if a.customer_key is not None:
+        # Customer mode takes no waiver: HOST_DATA names the key only when the build fingerprint is checked too.
+        if a.allow_any_measurement:
+            ap.error("customer mode refuses --allow-any-measurement: give --measurement HEX instead")
+        if a.allow_dev:
+            ap.error("customer mode refuses --allow-dev: a box with no report cannot be bound to a key")
+        if not a.measurement:
+            ap.error("customer mode needs --measurement HEX (repeatable): the build fingerprint must be checked")
+        try:
+            cpub = parse_customer_key(a.customer_key)
+        except ValueError as e:
+            ap.error(str(e))
+        # The tickets must be signed by the customer's own key: one key file that matches, or one ticket that verifies.
+        if a.ticket_key:
+            mine = ticket_signer.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+            if mine != cpub:
+                ap.error("customer mode: the ticket key in --ticket-key is not the customer's key (its public key differs from --customer-key)")
+        else:
+            try:
+                check_customer_ticket(a.ticket, cpub)
+            except ValueError as e:
+                ap.error(f"{e}; give --ticket-key with the customer's own key file")
     # Without a list the report proves a genuine chip, not our image: make the choice explicit before listening.
     if not a.measurement and not a.allow_any_measurement:
         ap.error("give --measurement HEX (repeatable) to say which build to trust, or --allow-any-measurement to accept any build")
@@ -76,7 +110,8 @@ async def main():
     lh, lp = a.listen.rsplit(":", 1)
     try:
         verify = Verify(product=a.product, allowed_measurements=a.measurement,
-                        allow_dev=a.allow_dev, allow_any_measurement=a.allow_any_measurement)
+                        allow_dev=a.allow_dev, allow_any_measurement=a.allow_any_measurement,
+                        customer_key=a.customer_key)
     except ValueError as e:
         ap.error(str(e))
     # CDP opens a connection per target and reconnects freely, and a ticket is

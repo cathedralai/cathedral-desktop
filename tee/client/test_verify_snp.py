@@ -3,6 +3,7 @@ The Python verifier against the saved chip report in tee/fixtures: accepted as i
 its own fingerprint pinned, refused with another fingerprint, refused when any signed byte, the
 binding or the AMD root is wrong. No network and no box: the VCEK is the saved one."""
 import base64
+import hashlib
 import json
 import os
 import sys
@@ -96,7 +97,7 @@ refused("another fingerprint pinned: refused",
 # A changed measurement byte is a change to signed bytes, so the chip signature is what refuses it.
 flipped = bytearray(report)
 flipped[0x90] ^= 0x01
-refused("one flipped fingerprint bit refused", lambda: verify(bytes(flipped), ark_der=read("amd-genoa-ark.der")), "InvalidSignature")
+refused("one flipped fingerprint bit refused, and the message names the report signature", lambda: verify(bytes(flipped), ark_der=read("amd-genoa-ark.der")), "report signature does not verify with the VCEK")
 
 # Policy bits are signed, so the policy refusal has to come before the signature check for the message
 # to name the policy. Bit 19 is debug and bit 18 is migration: byte 10 of the report, 0x08 and 0x04.
@@ -113,6 +114,234 @@ refused("a binding that does not hash to REPORT_DATA refused",
 
 # The ASK is not the pinned root, so the pin check refuses it before any signature is looked at.
 refused("a wrong AMD root refused", lambda: verify(ark_der=read("amd-genoa-ask.der")), "pinned AMD")
+
+# ---- each signature check names itself (cdp_shim prints only str(e), and a bare InvalidSignature prints nothing).
+# Same wording as tee/web/snp-verify.js.
+import sealed_stream as ss  # noqa: E402  (module import so a missing name fails its own check)
+
+ASK = read("amd-genoa-ask.der")
+
+
+def flip_last(b):
+    b = bytearray(b)
+    b[-1] ^= 1
+    return bytes(b)
+
+
+def verify_with(ask_der=ASK, vcek_der=None, ark_der=ARK, rep=report):
+    v = Verify(ark_der=ark_der, ask_der=ask_der, vcek_der=vcek_der or read("vcek.der"), allow_any_measurement=True)
+    return verify_snp(rep, static_pub, binding, v)
+
+
+refused("tampered ASK: names the ASK check", lambda: verify_with(ask_der=flip_last(ASK)), "ASK is not signed by the ARK")
+refused("tampered VCEK: names the VCEK check", lambda: verify_with(vcek_der=flip_last(read("vcek.der"))), "VCEK is not signed by the ASK")
+tampered_ark = flip_last(ARK)
+saved_pin = dict(ss.AMD_ARK_SHA256)
+ss.AMD_ARK_SHA256["Genoa"] = hashlib.sha256(tampered_ark).hexdigest()  # let the pin pass so the self-signature is what fails
+try:
+    refused("tampered ARK (pin matched): names the ARK self-signature check", lambda: verify_with(ark_der=tampered_ark), "ARK self-signature failed")
+finally:
+    ss.AMD_ARK_SHA256.clear()
+    ss.AMD_ARK_SHA256.update(saved_pin)
+sig_errors = set()
+for label, fn in (("ASK", lambda: verify_with(ask_der=flip_last(ASK))), ("VCEK", lambda: verify_with(vcek_der=flip_last(read("vcek.der")))),
+                  ("report", lambda: verify_with(rep=bytes(flipped)))):
+    try:
+        fn()
+    except Exception as e:  # noqa: BLE001
+        sig_errors.add(str(e))
+check("the three failures give three different, non-empty messages", len(sig_errors) == 3 and "" not in sig_errors, str(sig_errors))
+
+# ---- customer mode (AB#353 WP2): HOST_DATA must equal sha256("cathedral-tee-customer/v1\0" || customer key).
+
+
+with open(os.path.join(FX, "..", "testdata", "customer_host_data_v1.json")) as f:
+    vec = json.load(f)
+k_pub = bytes.fromhex(vec["customer"]["public_key_hex"])
+KEY = vec["customer"]["public_key_b64u"]
+GOOD = bytes.fromhex(vec["customer"]["host_data_hex"])
+LISTED = {"allowed_measurements": [measurement]}
+
+nz = vec["without_trailing_zero"]
+try:
+    check("vector: preimage is domain, zero byte, key", vec["customer"]["preimage_hex"] == vec["domain_hex"] + vec["customer"]["public_key_hex"] and vec["domain_hex"].endswith("00"))
+    check("vector: Python rebuilds HOST_DATA from the key", ss.customer_host_data(k_pub).hex() == vec["customer"]["host_data_hex"])
+    check("vector: file value is sha256 of the stored preimage", hashlib.sha256(bytes.fromhex(vec["customer"]["preimage_hex"])).hexdigest() == vec["customer"]["host_data_hex"])
+    check("vector: a different key gives the other stored value", ss.customer_host_data(bytes.fromhex(vec["other_customer"]["public_key_hex"])).hex() == vec["other_customer"]["host_data_hex"])
+    check("vector: the domain without its trailing zero byte gives a different value",
+          nz["host_data_hex"] != vec["customer"]["host_data_hex"] and hashlib.sha256(bytes.fromhex(nz["preimage_hex"])).hexdigest() == nz["host_data_hex"])
+    check("vector: the stored unlabelled sha256(key) differs and is what sha256 of the bare key gives",
+          vec["unlabelled_sha256_of_key"]["host_data_hex"] != vec["customer"]["host_data_hex"] and hashlib.sha256(k_pub).hexdigest() == vec["unlabelled_sha256_of_key"]["host_data_hex"])
+    check("vector: the stored b64url form decodes to the stored key", ss.parse_customer_key(KEY) == k_pub)
+except Exception as e:  # noqa: BLE001
+    check("vector", False, f"{type(e).__name__}: {e}")
+
+
+# The pure check: check_customer_host_data(host_data bytes, customer public key bytes). A check that only tests "not zero" fails these.
+def chk(hd, pub=k_pub):
+    return ss.check_customer_host_data(hd, pub)
+
+
+try:
+    chk(GOOD)
+    check("check: HOST_DATA for this key is accepted", True)
+except Exception as e:  # noqa: BLE001
+    check("check: HOST_DATA for this key is accepted", False, f"{type(e).__name__}: {e}")
+refused("check: HOST_DATA for a different customer key is refused", lambda: chk(bytes.fromhex(vec["other_customer"]["host_data_hex"])), "HOST_DATA does not match")
+refused("check: all-zero HOST_DATA is refused as zero", lambda: chk(bytes(32)), "HOST_DATA is zero")
+refused("check: sha256(key) without the label is refused", lambda: chk(bytes.fromhex(vec["unlabelled_sha256_of_key"]["host_data_hex"])), "HOST_DATA does not match")
+refused("check: the value built without the trailing zero byte is refused", lambda: chk(bytes.fromhex(nz["host_data_hex"])), "HOST_DATA does not match")
+refused("check: a 31-byte HOST_DATA is refused", lambda: chk(GOOD[:31]), "HOST_DATA")
+refused("check: a 33-byte HOST_DATA is refused", lambda: chk(GOOD + b"\0"), "HOST_DATA")
+refused("check: a 31-byte customer key is a usage error", lambda: chk(GOOD, k_pub[:31]), "invalid customer key")
+all_flips = True
+for i in range(32):
+    for bit in (0x01, 0x80):
+        h = bytearray(GOOD)
+        h[i] ^= bit
+        try:
+            chk(bytes(h))
+            all_flips = False
+        except Exception:  # noqa: BLE001
+            pass
+check("check: comparison is exact, a one-bit change in any of the 32 bytes is refused", all_flips)
+
+check("saved report HOST_DATA is all zero (today's fixture)", report[0xC0:0xE0] == bytes(32))
+refused("customer key set, HOST_DATA zero: refused, names HOST_DATA and zero",
+        lambda: verify(ark_der=ARK, customer_key=KEY, **LISTED), "HOST_DATA is zero")
+edited = bytearray(report)
+edited[0xC0:0xE0] = GOOD
+refused("customer key set, right HOST_DATA in an unsigned edit: the signature check still refuses",
+        lambda: verify(bytes(edited), ark_der=ARK, customer_key=KEY, **LISTED), "report signature does not verify")
+refused("customer key set, a wrong measurement is refused before HOST_DATA is looked at",
+        lambda: verify(ark_der=ARK, allowed_measurements=["ff" * 48], customer_key=KEY), "not an allowed fingerprint")
+
+# Customer mode refuses every waiver: the host picks HOST_DATA freely, so it binds the key only with the build checked too.
+refused("customer key set + allow_any_measurement: refused by name", lambda: Verify(customer_key=KEY, allow_any_measurement=True, **LISTED), "customer mode")
+refused("customer key set + allow_any_measurement: the message names the waiver", lambda: Verify(customer_key=KEY, allow_any_measurement=True, **LISTED), "allow_any_measurement")
+refused("customer key set + empty fingerprint list: refused by name", lambda: Verify(customer_key=KEY, allowed_measurements=[]), "customer mode needs a fingerprint list")
+refused("customer key set + allow_dev: refused by name", lambda: Verify(customer_key=KEY, allow_dev=True, **LISTED), "customer mode refuses allow_dev")
+for label, setter in (("allow_any_measurement", lambda v: setattr(v, "allow_any_measurement", True)), ("allow_dev", lambda v: setattr(v, "allow_dev", True)),
+                      ("an emptied list", lambda v: setattr(v, "allowed_measurements", []))):
+    def after_build(setter=setter):
+        vv = Verify(customer_key=KEY, **LISTED)
+        setter(vv)
+        return verify_snp(report, static_pub, binding, vv)
+
+    refused(f"waiver set after the options were built ({label}): verify_snp still refuses", after_build, "customer mode")
+
+b64u = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()  # noqa: E731
+for label, bad in (("empty string", ""), ("not base64url", "!" * 43), ("standard base64 characters", KEY.replace("-", "+").replace("_", "/") + "/"),
+                   ("padded", KEY + "="), ("31 bytes", b64u(k_pub[:31])), ("33 bytes", b64u(k_pub + b"\0")), ("a number", 5),
+                   ("raw bytes", k_pub), ("non-canonical trailing bits", KEY[:42] + "B")):
+    # Usage error when the options are built, and again if the field is set afterwards and the verifier is called.
+    refused(f"customer key {label}: usage error when the options are built", lambda bad=bad: Verify(customer_key=bad, **LISTED), "invalid customer key")
+    def set_after(bad=bad):
+        vv = Verify(**LISTED)
+        vv.customer_key = bad
+        return verify_snp(report, static_pub, binding, vv)
+
+    refused(f"customer key {label}: usage error from the verifier too", set_after, "invalid customer key")
+
+# Off by default: customer_key None is the only way to leave it off, and the result is what main returns.
+off = verify(ark_der=ARK, allow_any_measurement=True)
+check("no customer key: same result as before, including fixtures with zero HOST_DATA and the waiver",
+      off["ok"] and set(off) == {"ok", "test_mode", "measurement", "chip_id", "version"}, str(sorted(off)))
+check("Verify has no customer key by default", getattr(Verify(), "customer_key", "missing") is None)
+check("no customer key: allow_dev and allow_any_measurement still build as on main", Verify(allow_dev=True, allow_any_measurement=True).allow_dev)
+
+# ---- review fixes (AB#353): weak customer keys, ticket under the customer key, HOST_DATA offset.
+weak = vec["weak_keys"]["small_order_hex"] + vec["weak_keys"]["non_canonical_hex"]
+check("vector: 8 small-order encodings are listed", len(vec["weak_keys"]["small_order_hex"]) == 8)
+for h in weak:
+    wk = b64u(bytes.fromhex(h))
+    refused(f"weak customer key {h[:8]}..{h[-4:]}: usage error", lambda wk=wk: ss.parse_customer_key(wk), "invalid customer key")
+    refused(f"weak customer key {h[:8]}..{h[-4:]}: Verify refuses it when built", lambda wk=wk: Verify(customer_key=wk, **LISTED), "invalid customer key")
+    refused(f"weak customer key {h[:8]}..{h[-4:]}: the pure check refuses it", lambda h=h: ss.check_customer_host_data(GOOD, bytes.fromhex(h)), "invalid customer key")
+try:
+    ss.parse_customer_key(KEY)
+    check("a real customer key is still accepted", True)
+except Exception as e:  # noqa: BLE001
+    check("a real customer key is still accepted", False, f"{type(e).__name__}: {e}")
+
+# HOST_DATA is bytes 0xC0 to 0xDF. A synthetic buffer whose neighbours differ, so a wrong offset cannot pass.
+buf = bytearray(0x2A0 + 144)
+buf[0xA0:0xC0] = b"\x11" * 32
+buf[0xC0:0xE0] = b"\x22" * 32
+buf[0xE0:0x100] = b"\x33" * 32
+try:
+    check("report_host_data reads bytes 0xC0 to 0xDF", ss.report_host_data(bytes(buf)) == b"\x22" * 32)
+except Exception as e:  # noqa: BLE001
+    check("report_host_data reads bytes 0xC0 to 0xDF", False, f"{type(e).__name__}: {e}")
+
+# The ticket the client sends in customer mode: present, and signed by the customer key.
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
+from cryptography.hazmat.primitives import serialization as _ser  # noqa: E402
+
+ck, ok_ = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
+raw_pub = ck.public_key().public_bytes(_ser.Encoding.Raw, _ser.PublicFormat.Raw)
+
+
+def mk(priv, body=b'{"box":"x","target":"vnc"}'):
+    return f"{b64u(body)}.{b64u(priv.sign(body))}"
+
+
+try:
+    ss.check_customer_ticket(mk(ck), raw_pub)
+    check("ticket signed by the customer key is accepted", True)
+except Exception as e:  # noqa: BLE001
+    check("ticket signed by the customer key is accepted", False, f"{type(e).__name__}: {e}")
+refused("empty ticket in customer mode: refused by name", lambda: ss.check_customer_ticket("", raw_pub), "customer mode needs a ticket")
+refused("ticket signed by another key: usage error", lambda: ss.check_customer_ticket(mk(ok_), raw_pub), "signed by the customer key")
+good_t = mk(ck)
+refused("ticket with a changed body: refused", lambda: ss.check_customer_ticket(b64u(b'{"box":"y"}') + "." + good_t.split(".")[1], raw_pub), "signed by the customer key")
+for bad in ("abc", "a.b.c", "!!.??", "AAAA.AAAA"):
+    refused(f"malformed ticket {bad!r}: refused", lambda bad=bad: ss.check_customer_ticket(bad, raw_pub), "customer mode")
+
+# Message 2 must carry the marker; only then may a stream be called bound to the customer's key.
+try:
+    ss.check_ready({"ok": True, "mode": "customer"}, KEY)
+    check("message 2 with mode customer and a customer key: accepted", True)
+except Exception as e:  # noqa: BLE001
+    check("message 2 with mode customer and a customer key: accepted", False, f"{type(e).__name__}: {e}")
+for label, ready in (("no marker", {"ok": True}), ("another mode", {"ok": True, "mode": "cathedral"}), ("a non-string mode", {"ok": True, "mode": ["customer"]})):
+    refused(f"customer key, message 2 with {label}: refused with a named reason", lambda ready=ready: ss.check_ready(ready, KEY), "did not confirm customer mode")
+try:
+    ss.check_ready({"ok": True}, None)
+    ss.check_ready({"ok": True, "mode": "customer"}, None)
+    check("no customer key: message 2 is accepted with or without the member", True)
+except Exception as e:  # noqa: BLE001
+    check("no customer key: message 2 is accepted with or without the member", False, f"{type(e).__name__}: {e}")
+check("the verifier result no longer claims a binding by itself", "customer_bound" not in verify(ark_der=ARK, allow_any_measurement=True))
+
+# The check path must read HOST_DATA through report_host_data. The report signature check is replaced inside this test (no hook in
+# product code) so a report with a customer's HOST_DATA, which the chip never signed, can reach the HOST_DATA comparison.
+_real_verified = ss._verified
+
+
+def _skip_report_signature(fn, message):
+    if message.startswith("report signature"):
+        return
+    return _real_verified(fn, message)
+
+
+def with_host_data(at, value):
+    b = bytearray(report)
+    b[at:at + 32] = value
+    return bytes(b)
+
+
+ss._verified = _skip_report_signature
+try:
+    try:
+        r = verify(with_host_data(0xC0, GOOD), ark_der=ARK, customer_key=KEY, **LISTED)
+        check("HOST_DATA pin: the right value at 0xC0 passes the whole check path", r["ok"] is True, str(r))
+    except Exception as e:  # noqa: BLE001
+        check("HOST_DATA pin: the right value at 0xC0 passes the whole check path", False, f"{type(e).__name__}: {e}")
+    refused("HOST_DATA pin: the right value at 0xE0 instead is refused as zero", lambda: verify(with_host_data(0xE0, GOOD), ark_der=ARK, customer_key=KEY, **LISTED), "HOST_DATA is zero")
+    refused("HOST_DATA pin: another key's value at 0xC0 is refused", lambda: verify(with_host_data(0xC0, bytes.fromhex(vec["other_customer"]["host_data_hex"])), ark_der=ARK, customer_key=KEY, **LISTED), "HOST_DATA does not match")
+finally:
+    ss._verified = _real_verified
 
 print("all checks passed" if not failures else f"{failures} failure(s)")
 sys.exit(1 if failures else 0)

@@ -123,6 +123,13 @@ export async function verifyAmdChain({ ark, ask, vcek }, product = 'Genoa') {
 // ---- the report
 
 export const REPORT_LEN = 0x2A0 + 144;
+const HOST_DATA_OFFSET = 0xC0;
+
+/** HOST_DATA, the 32 bytes the host chose at launch: bytes 0xC0 to 0xDF of the report. */
+export function reportHostData(report) {
+  const b = report instanceof Uint8Array ? report : new Uint8Array(report);
+  return b.slice(HOST_DATA_OFFSET, HOST_DATA_OFFSET + 32);
+}
 
 export function parseReport(bytes) {
   const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -135,7 +142,7 @@ export function parseReport(bytes) {
     vmpl: u32(0x30),
     reportData: b.slice(0x50, 0x90),
     measurement: hex(b.slice(0x90, 0xC0)),
-    hostData: hex(b.slice(0xC0, 0xE0)),
+    hostData: hex(reportHostData(b)),
     reportId: hex(b.slice(0x140, 0x160)),
     reportedTcb: b.slice(0x180, 0x188),
     chipId: hex(b.slice(0x1A0, 0x1E0)),
@@ -193,8 +200,86 @@ export function normalizeMeasurements(list) {
   });
 }
 
-export async function verifySnp({ report, certs, product = 'Genoa', binding, allowedMeasurements = [], allowAnyMeasurement = false, minTcb }) {
+// ---- customer mode (AB#353): the box was launched for one customer key, and the chip signed that into HOST_DATA.
+// HOST_DATA = sha256("cathedral-tee-customer/v1" || 0x00 || customer public key). The trailing zero byte is part of the label.
+// The key is written as unpadded base64url of exactly 32 bytes; anything else is a usage error, never "no customer mode".
+const CUSTOMER_DOMAIN = new TextEncoder().encode('cathedral-tee-customer/v1\0');
+
+function customerKeyError(why) { return new Error(`invalid customer key: ${why}`); }
+
+/** The customer key string to its 32 raw bytes. Strict: unpadded, URL-safe alphabet, canonical encoding. */
+export function parseCustomerKey(s) {
+  if (typeof s !== 'string') throw customerKeyError('expected a base64url string');
+  if (!/^[A-Za-z0-9_-]{43}$/.test(s)) throw customerKeyError('expected 43 unpadded base64url characters (32 bytes)');
+  const out = Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '='), (c) => c.charCodeAt(0));
+  if (out.length !== 32 || btoa(String.fromCharCode(...out)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') !== s) throw customerKeyError('not a canonical encoding of 32 bytes');
+  if (isWeakEd25519Point(out)) throw customerKeyError('a small-order or non-canonical Ed25519 point cannot be a customer key');
+  return out;
+}
+
+// The 8 points of order dividing 8 have these y values (little-endian bytes for the two of order 8). With y >= 2^255-19 the
+// encoding is non-canonical. The sign bit is ignored here, so a small-order point is caught whichever sign it is written with.
+const ED_P = (1n << 255n) - 19n;
+const leInt = (u8) => u8.reduceRight((n, b) => (n << 8n) | BigInt(b), 0n);
+const WEAK_Y = new Set([0n, 1n, ED_P - 1n,
+  leInt(Uint8Array.from('26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05'.match(/../g), (x) => parseInt(x, 16))),
+  leInt(Uint8Array.from('c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a'.match(/../g), (x) => parseInt(x, 16)))]);
+function isWeakEd25519Point(u8) {
+  const c = u8.slice(); c[31] &= 0x7f;
+  const y = leInt(c);
+  return y >= ED_P || WEAK_Y.has(y);
+}
+
+/** The ticket a customer-mode client sends: present, and signed by the customer key. Checked before anything is sent. */
+export async function checkCustomerTicket(ticket, pub) {
+  if (typeof ticket !== 'string' || ticket === '') throw new Error('customer mode needs a ticket signed by the customer key');
+  const parts = ticket.split('.');
+  const bad = () => new Error('customer mode needs a ticket signed by the customer key: this ticket is not');
+  if (parts.length !== 2 || !parts.every((x) => /^[A-Za-z0-9_-]*$/.test(x))) throw bad();
+  const dec = (x) => Uint8Array.from(atob(x.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(x.length / 4) * 4, '=')), (c) => c.charCodeAt(0));
+  let body, sig;
+  try { body = dec(parts[0]); sig = dec(parts[1]); } catch { throw bad(); }
+  if (sig.length !== 64) throw bad();
+  let ok = false;
+  try { ok = await subtle.verify('Ed25519', await subtle.importKey('raw', pub, { name: 'Ed25519' }, false, ['verify']), sig, body); } catch { ok = false; }
+  if (!ok) throw bad();
+}
+
+export async function customerHostData(pub) {
+  if (!(pub instanceof Uint8Array) || pub.length !== 32) throw customerKeyError('expected 32 raw bytes');
+  if (isWeakEd25519Point(pub)) throw customerKeyError('a small-order or non-canonical Ed25519 point cannot be a customer key');
+  const pre = new Uint8Array(CUSTOMER_DOMAIN.length + 32);
+  pre.set(CUSTOMER_DOMAIN, 0);
+  pre.set(pub, CUSTOMER_DOMAIN.length);
+  return sha256(pre);
+}
+
+/** Pure check on raw bytes. All 32 bytes are compared with no early return. */
+export async function checkCustomerHostData(hostData, pub) {
+  const want = await customerHostData(pub);
+  if (!(hostData instanceof Uint8Array) || hostData.length !== 32) throw new Error(`HOST_DATA is ${hostData?.length ?? 'not'} bytes, expected 32`);
+  let zero = 0, diff = 0;
+  for (let i = 0; i < 32; i++) { zero |= hostData[i]; diff |= hostData[i] ^ want[i]; }
+  if (zero === 0) throw new Error('HOST_DATA is zero: this box was not launched for a customer key');
+  if (diff !== 0) throw new Error('HOST_DATA does not match the customer key: this box was launched for a different key');
+}
+
+/**
+ * Customer mode takes no waiver. The host chooses HOST_DATA freely for any image, so it names the key only when
+ * the build fingerprint is checked too. Returns the key bytes, or null when no customer key is set (undefined only).
+ */
+export function checkCustomerOptions({ customerKey, allowDev, allowAnyMeasurement, allowedMeasurements }) {
+  if (customerKey === undefined) return null;
+  const pub = parseCustomerKey(customerKey);
+  if (allowDev) throw new Error('customer mode refuses allowDev: a box with no report cannot be bound to a key');
+  if (allowAnyMeasurement) throw new Error('customer mode refuses allowAnyMeasurement: the build fingerprint must be checked');
+  if (!allowedMeasurements || allowedMeasurements.length === 0) throw new Error('customer mode needs a fingerprint list: the build fingerprint must be checked');
+  return pub;
+}
+
+export async function verifySnp({ report, certs, product = 'Genoa', binding, allowedMeasurements = [], allowAnyMeasurement = false, minTcb, customerKey, allowDev = false }) {
   checkTcbFloor(minTcb);
+  const customerPub = checkCustomerOptions({ customerKey, allowDev, allowAnyMeasurement, allowedMeasurements });
   allowedMeasurements = normalizeMeasurements(allowedMeasurements);
   const rep = parseReport(report);
   // Before any signature work: a guest that allows debugging or migration can be read or moved by the
@@ -226,6 +311,7 @@ export async function verifySnp({ report, certs, product = 'Genoa', binding, all
   // Without a list the report proves a genuine chip, not that it runs our image, so a missing list must be a decision.
   if (!measured && !allowAnyMeasurement) throw new Error('no fingerprint list given: refusing to accept any build without allowAnyMeasurement');
   if (measured && !allowedMeasurements.includes(rep.measurement)) throw new Error(`MEASUREMENT ${rep.measurement.slice(0, 16)} is not an allowed fingerprint`);
+  if (customerPub) await checkCustomerHostData(reportHostData(rep.signed), customerPub);
   return {
     ok: true,
     testMode: !measured,

@@ -23,9 +23,11 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from cryptography import x509
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -64,10 +66,118 @@ class Verify:
     # Optional floor on the reported firmware, {"bl": n, "tee": n, "snp": n, "ucode": n}; parts left out are not checked.
     min_tcb: dict[str, int] | None = None
     tls_spki: bytes | None = None
+    # Customer mode (AB#353): unpadded base64url of the customer's 32-byte public key. None is the only way to leave it off.
+    customer_key: str | None = None
 
     def __post_init__(self):
         # Same forms as the page: trimmed and lower-cased, then exactly 96 hex characters.
         self.allowed_measurements = [_normalize_measurement(m) for m in self.allowed_measurements]
+        check_customer_options(self)
+
+
+# ---- customer mode: the box was launched for one customer key, and the chip signed that into HOST_DATA.
+# HOST_DATA = sha256("cathedral-tee-customer/v1" || 0x00 || customer public key). The trailing zero byte is part of the label.
+CUSTOMER_DOMAIN = b"cathedral-tee-customer/v1\0"
+
+
+def parse_customer_key(s) -> bytes:
+    """The customer key string to its 32 raw bytes. Strict: unpadded, URL-safe alphabet, canonical encoding."""
+    if not isinstance(s, str):
+        raise ValueError("invalid customer key: expected a base64url string")
+    if len(s) != 43 or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for c in s):
+        raise ValueError("invalid customer key: expected 43 unpadded base64url characters (32 bytes)")
+    raw = b64u_decode(s)
+    if len(raw) != 32 or base64.urlsafe_b64encode(raw).rstrip(b"=").decode() != s:
+        raise ValueError("invalid customer key: not a canonical encoding of 32 bytes")
+    if _is_weak_ed25519_point(raw):
+        raise ValueError("invalid customer key: a small-order or non-canonical Ed25519 point cannot be a customer key")
+    return raw
+
+
+# The 8 points of order dividing 8 have these y values (little-endian bytes for the two of order 8). With y >= 2^255-19 the
+# encoding is non-canonical. The sign bit is ignored here, so a small-order point is caught whichever sign it is written with.
+_ED_P = (1 << 255) - 19
+_WEAK_Y = {0, 1, _ED_P - 1,
+           int.from_bytes(bytes.fromhex("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"), "little"),
+           int.from_bytes(bytes.fromhex("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"), "little")}
+
+
+def _is_weak_ed25519_point(raw: bytes) -> bool:
+    y = int.from_bytes(raw, "little") & ((1 << 255) - 1)
+    return y >= _ED_P or y in _WEAK_Y
+
+
+def check_customer_ticket(ticket: str, pub: bytes) -> None:
+    """The ticket a customer-mode client sends: present, and signed by the customer key. Checked before anything is sent."""
+    if not isinstance(ticket, str) or ticket == "":
+        raise ValueError("customer mode needs a ticket signed by the customer key")
+    bad = ValueError("customer mode needs a ticket signed by the customer key: this ticket is not")
+    parts = ticket.split(".")
+    if len(parts) != 2:
+        raise bad
+    try:
+        body, sig = b64u_decode(parts[0]), b64u_decode(parts[1])
+        if len(sig) != 64:
+            raise bad
+        Ed25519PublicKey.from_public_bytes(pub).verify(sig, body)
+    except (InvalidSignature, ValueError, TypeError):
+        raise bad from None
+
+
+def check_ready(ready: dict, customer_key: str | None) -> None:
+    """Message 2 for a client with a customer key must carry mode "customer"; a client without one ignores the member."""
+    if customer_key is not None and ready.get("mode") != "customer":
+        raise RuntimeError("the box did not confirm customer mode")
+
+
+HOST_DATA_OFFSET = 0xC0
+
+
+def report_host_data(report: bytes) -> bytes:
+    """HOST_DATA, the 32 bytes the host chose at launch: bytes 0xC0 to 0xDF of the report."""
+    return bytes(report[HOST_DATA_OFFSET:HOST_DATA_OFFSET + 32])
+
+
+def customer_host_data(pub: bytes) -> bytes:
+    if not isinstance(pub, (bytes, bytearray)) or len(pub) != 32:
+        raise ValueError("invalid customer key: expected 32 raw bytes")
+    if _is_weak_ed25519_point(bytes(pub)):
+        raise ValueError("invalid customer key: a small-order or non-canonical Ed25519 point cannot be a customer key")
+    return hashlib.sha256(CUSTOMER_DOMAIN + bytes(pub)).digest()
+
+
+def check_customer_host_data(host_data: bytes, pub: bytes) -> None:
+    """Pure check on raw bytes; the comparison covers all 32 bytes in constant time."""
+    want = customer_host_data(pub)  # also refuses a weak key
+    if len(host_data) != 32:
+        raise ValueError(f"HOST_DATA is {len(host_data)} bytes, expected 32")
+    if host_data == bytes(32):
+        raise ValueError("HOST_DATA is zero: this box was not launched for a customer key")
+    if not hmac.compare_digest(bytes(host_data), want):
+        raise ValueError("HOST_DATA does not match the customer key: this box was launched for a different key")
+
+
+def check_customer_options(v: "Verify") -> bytes | None:
+    """Customer mode takes no waiver. The host chooses HOST_DATA freely for any image, so it names the key only when
+    the build fingerprint is checked too. Returns the key bytes, or None when no customer key is set."""
+    if v.customer_key is None:
+        return None
+    pub = parse_customer_key(v.customer_key)
+    if v.allow_dev:
+        raise ValueError("customer mode refuses allow_dev: a box with no report cannot be bound to a key")
+    if v.allow_any_measurement:
+        raise ValueError("customer mode refuses allow_any_measurement: the build fingerprint must be checked")
+    if not v.allowed_measurements:
+        raise ValueError("customer mode needs a fingerprint list: the build fingerprint must be checked")
+    return pub
+
+
+def message1_payload(target: str, ticket: str, customer_key: str | None = None) -> bytes:
+    """Message 1's plaintext. The customer field is present only when a customer key is set, so off is byte for byte what it was."""
+    body = {"target": target, "ticket": ticket}
+    if customer_key is not None:
+        body["customer"] = customer_key
+    return json.dumps(body).encode()
 
 
 # AMD's chip certificate carries the firmware numbers it was issued for in these extensions; the value is
@@ -106,6 +216,13 @@ def _check_tcb_floor(floor) -> None:
             raise ValueError(f"invalid TCB floor: part {k} must be an integer from 0 to 255")
 
 
+def _verified(fn, message: str) -> None:
+    try:
+        fn()
+    except InvalidSignature:
+        raise ValueError(message) from None
+
+
 def _kds(url: str, cache: str) -> bytes:
     os.makedirs(cache, exist_ok=True)
     p = os.path.join(cache, hashlib.sha256(url.encode()).hexdigest())
@@ -119,6 +236,7 @@ def _kds(url: str, cache: str) -> bytes:
 
 def verify_snp(report: bytes, static_pub: bytes, binding: str, v: Verify) -> dict:
     _check_tcb_floor(v.min_tcb)
+    customer_pub = check_customer_options(v)
     if len(report) < 0x2A0 + 144:
         raise ValueError("report too short")
     # Before any signature work: a guest that allows debugging or migration can be read or moved by the
@@ -148,9 +266,10 @@ def verify_snp(report: bytes, static_pub: bytes, binding: str, v: Verify) -> dic
     vcek_der = v.vcek_der or _kds(f"https://kdsintf.amd.com/vcek/v1/{v.product}/{chip}?blSPL={tcb[0]}&teeSPL={tcb[1]}&snpSPL={tcb[6]}&ucodeSPL={tcb[7]}", v.kds_cache)
     vcek = x509.load_der_x509_certificate(vcek_der)
     pss = padding.PSS(mgf=padding.MGF1(hashes.SHA384()), salt_length=48)
-    ark.public_key().verify(ark.signature, ark.tbs_certificate_bytes, pss, hashes.SHA384())
-    ark.public_key().verify(ask.signature, ask.tbs_certificate_bytes, pss, hashes.SHA384())
-    ask.public_key().verify(vcek.signature, vcek.tbs_certificate_bytes, pss, hashes.SHA384())
+    # Each signature check names itself: a bare InvalidSignature has an empty message and says nothing to the user.
+    _verified(lambda: ark.public_key().verify(ark.signature, ark.tbs_certificate_bytes, pss, hashes.SHA384()), "ARK self-signature failed")
+    _verified(lambda: ark.public_key().verify(ask.signature, ask.tbs_certificate_bytes, pss, hashes.SHA384()), "ASK is not signed by the ARK")
+    _verified(lambda: ask.public_key().verify(vcek.signature, vcek.tbs_certificate_bytes, pss, hashes.SHA384()), "VCEK is not signed by the ASK")
     # The certificate was issued for one firmware level; the report must say the same, or the chip that
     # signed it is not the one the certificate vouches for. Before the signature so the message names it.
     for part, oid, off in _TCB_PARTS:
@@ -159,7 +278,7 @@ def verify_snp(report: bytes, static_pub: bytes, binding: str, v: Verify) -> dic
             raise ValueError(f"firmware {part} in the chip certificate ({in_cert}) does not match the report ({report[off]})")
     r = int.from_bytes(report[0x2A0:0x2A0 + 72], "little")
     s = int.from_bytes(report[0x2E8:0x2E8 + 72], "little")
-    vcek.public_key().verify(encode_dss_signature(r, s), report[:0x2A0], ec.ECDSA(hashes.SHA384()))
+    _verified(lambda: vcek.public_key().verify(encode_dss_signature(r, s), report[:0x2A0], ec.ECDSA(hashes.SHA384())), "report signature does not verify with the VCEK")
     # A floor, not a pin: the oldest firmware the caller will run on, per part.
     for part, _, off in _TCB_PARTS:
         floor = (v.min_tcb or {}).get(part)
@@ -170,6 +289,8 @@ def verify_snp(report: bytes, static_pub: bytes, binding: str, v: Verify) -> dic
         raise ValueError("no fingerprint list given: refusing to accept any build without allow_any_measurement")
     if v.allowed_measurements and measurement not in v.allowed_measurements:
         raise ValueError(f"MEASUREMENT {measurement[:16]} is not an allowed fingerprint")
+    if customer_pub is not None:
+        check_customer_host_data(report_host_data(report), customer_pub)
     return {"ok": True, "test_mode": not v.allowed_measurements, "measurement": measurement, "chip_id": chip, "version": int.from_bytes(report[:4], "little")}
 
 
@@ -306,14 +427,16 @@ async def open_stream(r: asyncio.StreamReader, w: asyncio.StreamWriter, target: 
     so they cannot be prepared before the box has introduced itself, and they
     cannot be reused across connections (``mint_ticket.minter``).
     """
+    # Usage errors and waivers in customer mode are refused before any byte is written; the fields can be set after Verify was built.
+    customer_pub = check_customer_options(verify)
+    if customer_pub is not None and mint is None:
+        check_customer_ticket(ticket, customer_pub)  # a ticket given up front is checked before HELLO
     write_frame(w, json.dumps({"v": 1}).encode())
     await w.drain()
     att = json.loads(await read_frame(r))
     if "error" in att:
         raise RuntimeError(f"box: {att['error']}")
     rs = b64u_decode(att["static"])
-    if mint is not None:
-        ticket = mint(rs)
     report = b64u_decode(att["report"]) if att.get("report") else b""
     if not report:
         if not verify.allow_dev:
@@ -325,11 +448,24 @@ async def open_stream(r: asyncio.StreamReader, w: asyncio.StreamWriter, target: 
         attestation = verify_snp(report, rs, att["binding"], verify)
         if keep:  # the exact bytes REPORT_DATA commits to, for offline tests
             open(keep, "w").write(att["binding"])
+    # A ticket is minted only for a box whose report passed: a refused box gets nothing.
+    if mint is not None:
+        ticket = mint(rs)
+        if customer_pub is not None:
+            check_customer_ticket(ticket, customer_pub)
     hs = Handshake(PROLOGUE + hashlib.sha256(report).digest(), rs)
-    write_frame(w, hs.write_message1(json.dumps({"target": target, "ticket": ticket}).encode()))
+    write_frame(w, hs.write_message1(message1_payload(target, ticket, verify.customer_key)))
     await w.drain()
     ready = json.loads(hs.read_message2(await read_frame(r)))
     if not ready.get("ok"):
         raise RuntimeError(f"box refused: {ready.get('error')}")
+    # Only a box that says, inside this authenticated answer, that it is in customer mode may be called bound to the customer's key.
+    try:
+        check_ready(ready, verify.customer_key)
+    except RuntimeError:
+        w.close()
+        raise
+    if verify.customer_key is not None:
+        attestation["customer_bound"] = True
     send, recv = hs.split()
     return Stream(r, w, send, recv, attestation)
