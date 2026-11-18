@@ -50,3 +50,13 @@ export function linkProblem(link) {
   }
   return null;
 }
+
+/**
+ * The line the page always shows saying who serves it. Every origin gets it, loopback too: a loopback page can
+ * be the far end of an SSH tunnel to the relay, where the origin reads 127.0.0.1 and looks local. Nothing in the link can turn it off.
+ * @param {{protocol: string, host: string, origin?: string}} loc
+ */
+export function hostedLabel(loc) {
+  const origin = loc.origin || `${loc.protocol}//${loc.host}`;
+  return `Loaded from ${origin}. Whoever serves this page, even through a tunnel, can see your screen.`;
+}

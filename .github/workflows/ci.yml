@@ -72,6 +72,10 @@ jobs:
         run: node tee/web/test-stream-verify.mjs
       - name: Page link rules
         run: node tee/web/test-link.mjs
+      - name: noVNC fetch is pinned by hash
+        run: bash tee/web/test-get-novnc.sh
+      - name: Customer wording guard
+        run: python tee/test_wording.py
 
   interop:
     needs: boxd
@@ -121,7 +125,7 @@ jobs:
           path: ${{ runner.temp }}/bin
       - name: Make boxd executable
         run: chmod +x "$RUNNER_TEMP/bin/boxd"
-      # Copies the AMD certificates next to the page. noVNC is fetched by tag without a hash check and is used by this job only.
+      # Copies the AMD certificates next to the page. noVNC is checked against the sha256 in tee/web/novnc-sha256.txt, and the fetch fails on a mismatch. This job only uses it.
       - name: Fetch page assets
         run: bash tee/web/get-novnc.sh
       - name: Page in a real browser

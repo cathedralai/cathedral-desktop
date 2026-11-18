@@ -92,8 +92,8 @@ values; 0.0.13 is pinned because the c48 notes used it.
   repository's rootfs script does not pin a snapshot or a build date). The kernel hash depends on the
   toolchain: another gcc, binutils or zstd version gives another hash.
 - What a passing check shows: the arithmetic from these input files to this number, and that for runs
-  4 to 7 the number is the one the chip signed. It does not prove the files were built from source, and
-  it does not prove a new box reports the number; that needs an AMD host.
+  4 to 7 the number is the one the chip signed. It does not show that the files were built from source, and
+  it does not show that a new box reports the number; that needs an AMD host.
 
 ## Finding: the initrd holds more than it should
 
