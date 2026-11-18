@@ -19,7 +19,9 @@ Cloud Hypervisor with the serial console on stdio). {i}, {tls_port} and {stream_
 in per box. The box address comes from the console NET line, else --host. --box HOST checks a box
 that is already up (boot time is then not measured).
 
-Exit 0 only when every box passes every step and every tampered box is refused.
+Exit 0 only when every box passes every step and every tampered box is refused at the MEASUREMENT check.
+A tampered box that fails to boot, answer or serve a report is a failure, not a refusal. A run with
+no tampered box exits 2 (INCOMPLETE): it is a smoke check, not AB#364 evidence.
 """
 from __future__ import annotations
 
@@ -240,8 +242,15 @@ def check_box(name: str, a, verify: Verify, binary: bytes, tampered: bool, launc
             step = "verify"
             t = time.monotonic()
             r, w = asyncio.run(_attest_only(host, stream_port))
-            verify_snp(report, r, w, v)
-            res["ms"]["verify"] = (time.monotonic() - t) * 1000
+            try:
+                verify_snp(report, r, w, v)
+            except ValueError as e:
+                res["ms"]["verify"] = (time.monotonic() - t) * 1000
+                detail = tampered_refusal(e)
+                if detail is None:
+                    raise
+                res["ok"], res["detail"] = True, detail
+                return res
             raise AssertionError("tampered box passed verification")
 
         step = "link"
@@ -276,14 +285,19 @@ def check_box(name: str, a, verify: Verify, binary: bytes, tampered: bool, launc
             raise RuntimeError(f"output {out[:80]!r} lacks {a.expect_output!r}")
         res["ok"] = True
     except Exception as e:  # noqa: BLE001 - every failure is reported per box and step
-        if tampered and not isinstance(e, AssertionError):
-            res["ok"], res["detail"] = True, f"refused at {step}: {type(e).__name__}: {e}"[:160]
-        else:
-            res["detail"] = f"{step}: {type(e).__name__}: {e}"[:160]
+        # For a tampered box too: a box that did not boot, answer or serve a report proves nothing about the verifier.
+        res["detail"] = f"{step}: {type(e).__name__}: {e}"[:160]
     finally:
         if box:
             box.halt()
     return res
+
+
+def tampered_refusal(e: Exception) -> str | None:
+    """The negative control passes only when the verifier rejects the box's MEASUREMENT; any other error is a failure."""
+    if isinstance(e, ValueError) and "is not an allowed fingerprint" in str(e):
+        return f"refused at verify: {e}"[:160]
+    return None
 
 
 async def _attest_only(host: str, port: int) -> tuple[bytes, str]:
@@ -403,15 +417,21 @@ def main(argv=None) -> int:
     passed = all(r["ok"] for r in results) and all(ok for _, ok, _ in offline)
     good = sum(1 for r in results if r["ok"] and not r["tampered"])
     refused = sum(1 for r in results if r["ok"] and r["tampered"])
-    print(f"\n{'ALL CHECKS PASSED' if passed else 'FAILED'}: {good}/{sum(not r['tampered'] for r in results)} boxes "
+    # Without a tampered box nothing shows the fingerprint check refuses anything: a smoke run, not evidence.
+    complete = any(r["tampered"] for r in results)
+    verdict = ("ALL CHECKS PASSED" if complete else "INCOMPLETE (no tampered box)") if passed else "FAILED"
+    print(f"\n{verdict}: {good}/{sum(not r['tampered'] for r in results)} boxes "
           f"passed, {refused}/{sum(r['tampered'] for r in results)} tampered refused, fingerprint "
           f"{fps[0][:16] + '...' if fps else 'none (dev)'}")
     if a.json_out:
         with open(a.json_out, "w") as f:
             json.dump({"fingerprints": fps, "boxes": results,
                        "offline_tamper": [{"check": n, "refused": ok, "detail": d} for n, ok, d in offline],
-                       "passed": passed, "launch": a.launch and shlex.split(a.launch)[0]}, f, indent=2)
-    return 0 if passed else 1
+                       "passed": passed, "complete": complete,
+                       "launch": a.launch and shlex.split(a.launch)[0]}, f, indent=2)
+    if not passed:
+        return 1
+    return 0 if complete else 2
 
 
 if __name__ == "__main__":

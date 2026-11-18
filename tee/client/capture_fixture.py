@@ -66,9 +66,10 @@ def main():
         from cryptography import x509
         from cryptography.hazmat.primitives import serialization
         spki = x509.load_der_x509_certificate(cert).public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        # This run exists to learn the fingerprint, so there is no list to check it against yet.
         # The ticket names the box, so it is minted from the key the box presents.
         mint = minter(a.ticket_key, "job") if a.ticket_key else None
-        s = await open_stream(r, w, target="job", verify=Verify(product=a.product, vcek_der=vcek, tls_spki=spki),
+        s = await open_stream(r, w, target="job", verify=Verify(product=a.product, vcek_der=vcek, tls_spki=spki, allow_any_measurement=True),
                               mint=mint, keep=os.path.join(a.out, "binding.json"))
         await s.send(b"JOB 1\n")
         reply = await s.recv()

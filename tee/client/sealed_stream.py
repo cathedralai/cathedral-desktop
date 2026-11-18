@@ -18,6 +18,7 @@ import hmac
 import json
 import os
 import struct
+import sys
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -58,8 +59,51 @@ class Verify:
     vcek_der: bytes | None = None
     kds_cache: str = os.path.join(HERE, ".kds-cache")
     allow_dev: bool = False
+    # Only to learn a build's fingerprint: without a list the report proves a genuine chip, not our image.
+    allow_any_measurement: bool = False
+    # Optional floor on the reported firmware, {"bl": n, "tee": n, "snp": n, "ucode": n}; parts left out are not checked.
+    min_tcb: dict[str, int] | None = None
     tls_spki: bytes | None = None
-    allow_debug: bool = False
+
+    def __post_init__(self):
+        # Same forms as the page: trimmed and lower-cased, then exactly 96 hex characters.
+        self.allowed_measurements = [_normalize_measurement(m) for m in self.allowed_measurements]
+
+
+# AMD's chip certificate carries the firmware numbers it was issued for in these extensions; the value is
+# an OCTET STRING holding a DER INTEGER. The part names are the ones the KDS URL uses.
+_TCB_PARTS = (("bl", "1.3.6.1.4.1.3704.1.3.1", 0x180), ("tee", "1.3.6.1.4.1.3704.1.3.2", 0x181),
+              ("snp", "1.3.6.1.4.1.3704.1.3.3", 0x186), ("ucode", "1.3.6.1.4.1.3704.1.3.8", 0x187))
+
+
+def _cert_tcb(cert: x509.Certificate, part: str, oid: str) -> int:
+    try:
+        raw = cert.extensions.get_extension_for_oid(x509.ObjectIdentifier(oid)).value.value
+    except x509.ExtensionNotFound:
+        raise ValueError(f"chip certificate has no firmware number for {part}") from None
+    if len(raw) < 3 or raw[0] != 0x02 or raw[1] != len(raw) - 2 or raw[1] > 2:
+        raise ValueError(f"chip certificate firmware number for {part} is not a small DER integer")
+    return int.from_bytes(raw[2:], "big")
+
+
+def _normalize_measurement(m: str) -> str:
+    n = str(m).strip().lower()
+    if len(n) != 96 or any(c not in "0123456789abcdef" for c in n):
+        raise ValueError("invalid fingerprint: expected 96 hex characters")
+    return n
+
+
+def _check_tcb_floor(floor) -> None:
+    """The floor is a dict of the four part names, each an integer 0 to 255; a part left out is not checked."""
+    if floor is None:
+        return
+    if not isinstance(floor, dict):
+        raise ValueError("invalid TCB floor: expected an object with parts bl, tee, snp, ucode")
+    for k, v in floor.items():
+        if k not in {p for p, _, _ in _TCB_PARTS}:
+            raise ValueError(f'invalid TCB floor: unknown part "{k}"')
+        if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 255:
+            raise ValueError(f"invalid TCB floor: part {k} must be an integer from 0 to 255")
 
 
 def _kds(url: str, cache: str) -> bytes:
@@ -74,8 +118,16 @@ def _kds(url: str, cache: str) -> bytes:
 
 
 def verify_snp(report: bytes, static_pub: bytes, binding: str, v: Verify) -> dict:
+    _check_tcb_floor(v.min_tcb)
     if len(report) < 0x2A0 + 144:
         raise ValueError("report too short")
+    # Before any signature work: a guest that allows debugging or migration can be read or moved by the
+    # host, so no later check makes its report worth trusting. Policy is 8 bytes little-endian at offset 8.
+    policy = int.from_bytes(report[8:16], "little")
+    if policy >> 19 & 1:
+        raise ValueError("policy allows debugging (bit 19): the host can read this guest")
+    if policy >> 18 & 1:
+        raise ValueError("policy allows migration (bit 18): the host can move this guest")
     # binding: REPORT_DATA = sha256(canonical(binding)) || zeros, and the binding names the stream key
     bound = json.loads(binding)
     named = bound.get("sealed_stream") or {}
@@ -99,13 +151,23 @@ def verify_snp(report: bytes, static_pub: bytes, binding: str, v: Verify) -> dic
     ark.public_key().verify(ark.signature, ark.tbs_certificate_bytes, pss, hashes.SHA384())
     ark.public_key().verify(ask.signature, ask.tbs_certificate_bytes, pss, hashes.SHA384())
     ask.public_key().verify(vcek.signature, vcek.tbs_certificate_bytes, pss, hashes.SHA384())
+    # The certificate was issued for one firmware level; the report must say the same, or the chip that
+    # signed it is not the one the certificate vouches for. Before the signature so the message names it.
+    for part, oid, off in _TCB_PARTS:
+        in_cert = _cert_tcb(vcek, part, oid)
+        if in_cert != report[off]:
+            raise ValueError(f"firmware {part} in the chip certificate ({in_cert}) does not match the report ({report[off]})")
     r = int.from_bytes(report[0x2A0:0x2A0 + 72], "little")
     s = int.from_bytes(report[0x2E8:0x2E8 + 72], "little")
     vcek.public_key().verify(encode_dss_signature(r, s), report[:0x2A0], ec.ECDSA(hashes.SHA384()))
-    # POLICY bit 19 lets the host debug the guest: same MEASUREMENT, but its memory is readable.
-    if (int.from_bytes(report[0x08:0x10], "little") >> 19) & 1 and not v.allow_debug:
-        raise ValueError("guest policy allows debugging")
+    # A floor, not a pin: the oldest firmware the caller will run on, per part.
+    for part, _, off in _TCB_PARTS:
+        floor = (v.min_tcb or {}).get(part)
+        if floor is not None and report[off] < floor:
+            raise ValueError(f"reported firmware is below the floor: {part} {report[off]} < {floor}")
     measurement = report[0x90:0xC0].hex()
+    if not v.allowed_measurements and not v.allow_any_measurement:
+        raise ValueError("no fingerprint list given: refusing to accept any build without allow_any_measurement")
     if v.allowed_measurements and measurement not in v.allowed_measurements:
         raise ValueError(f"MEASUREMENT {measurement[:16]} is not an allowed fingerprint")
     return {"ok": True, "test_mode": not v.allowed_measurements, "measurement": measurement, "chip_id": chip, "version": int.from_bytes(report[:4], "little")}
@@ -256,6 +318,8 @@ async def open_stream(r: asyncio.StreamReader, w: asyncio.StreamWriter, target: 
     if not report:
         if not verify.allow_dev:
             raise RuntimeError("box presented no attestation report")
+        # Everything after this is unproven: the host that relays this stream can sit in the middle of it.
+        print("WARNING: box presented no attestation report; allow_dev is on, so this stream is NOT attested", file=sys.stderr)
         attestation = {"ok": False, "dev": True}
     else:
         attestation = verify_snp(report, rs, att["binding"], verify)

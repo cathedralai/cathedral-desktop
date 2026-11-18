@@ -45,6 +45,17 @@ def offline():
           measurement[:16])
     for name, ok, detail in combined_check.offline_tamper_checks(report, static, binding, v):
         check(f"offline tamper: {name} refused", ok, detail)
+    wrong = Verify(**{**v.__dict__, "allowed_measurements": ["00" * 48]})
+    try:
+        verify_snp(report, static, binding, wrong)
+        check("tampered refusal: the c48 report under another fingerprint is refused", False, "accepted")
+    except ValueError as e:
+        check("tampered refusal: a MEASUREMENT rejection from the verifier counts as the refusal",
+              combined_check.tampered_refusal(e) is not None, str(e)[:60])
+    check("tampered refusal: other errors do not count",
+          combined_check.tampered_refusal(ValueError("report too short")) is None
+          and combined_check.tampered_refusal(RuntimeError("box presented no attestation report")) is None
+          and combined_check.tampered_refusal(ConnectionRefusedError()) is None)
     check("NET line with CIDR gives the address", combined_check.net_address(["NET 10.99.9.13/24 via dhcp"]) == "10.99.9.13")
     check("NET none and the user-mode fallback are not addresses",
           combined_check.net_address(["NET none via x"]) is None
@@ -140,20 +151,48 @@ def end_to_end():
         launch = f"exec {BOXD} -dev -noticket -tls 127.0.0.1:{{tls_port}} -stream 127.0.0.1:{{stream_port}}"
         common = ["--launch", launch, "--host", "127.0.0.1", "--tls-port", "29443", "--stream-port", "29444",
                   "--port-stride", "2", "--binary", job, "--expect-exit", "3", "--expect-output", "hello",
-                  "--tampered-launch", launch, "--boot-timeout", "10"]
+                  "--boot-timeout", "10"]
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             rc = combined_check.main(["--boxes", "2", "--allow-dev", "--json-out", os.path.join(tmp, "r.json"), *common])
         with open(os.path.join(tmp, "r.json")) as f:
             res = json.load(f)
         boxes = res["boxes"]
-        check("e2e dev: two boxes pass every step, the tampered one is refused, exit 0",
-              rc == 0 and [b["ok"] for b in boxes] == [True, True, True] and boxes[2]["tampered"]
-              and all(set(combined_check.STEPS) <= set(b["ms"]) for b in boxes[:2]),
-              out.getvalue().strip().splitlines()[-1])
-        check("e2e dev: the tampered box was refused before any job", "refused at" in boxes[2]["detail"]
-              and "job" not in boxes[2]["ms"], boxes[2]["detail"])
+        last = out.getvalue().strip().splitlines()[-1]
+        check("e2e dev: two boxes pass every step; no tampered box is INCOMPLETE, exit 2",
+              rc == 2 and [b["ok"] for b in boxes] == [True, True] and res["complete"] is False
+              and last.startswith("INCOMPLETE") and all(set(combined_check.STEPS) <= set(b["ms"]) for b in boxes),
+              last)
         print("    " + "\n    ".join(ln for ln in out.getvalue().splitlines() if ln.strip()))
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = combined_check.main(["--boxes", "1", "--allow-dev", "--json-out", os.path.join(tmp, "r.json"),
+                                      *common, "--tampered-launch", launch])
+        with open(os.path.join(tmp, "r.json")) as f:
+            boxes = json.load(f)["boxes"]
+        check("e2e dev: a tampered box with no report is a failure, not a refusal, exit 1",
+              rc == 1 and boxes[1]["tampered"] and not boxes[1]["ok"] and boxes[1]["detail"].startswith("report:")
+              and "job" not in boxes[1]["ms"], boxes[1]["detail"])
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = combined_check.main(["--boxes", "1", "--allow-dev", "--json-out", os.path.join(tmp, "r.json"),
+                                      *common, "--tampered-launch", "exit 1"])
+        with open(os.path.join(tmp, "r.json")) as f:
+            boxes = json.load(f)["boxes"]
+        check("e2e dev: a tampered box that never boots is a failure, exit 1",
+              rc == 1 and not boxes[1]["ok"] and boxes[1]["detail"].startswith("boot:"), boxes[1]["detail"])
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = combined_check.main(["--boxes", "1", "--allow-dev", "--json-out", os.path.join(tmp, "r.json"),
+                                      *common, "--tampered-box", "127.0.0.1", "--tls-port", "29943",
+                                      "--stream-port", "29944"])
+        with open(os.path.join(tmp, "r.json")) as f:
+            boxes = json.load(f)["boxes"]
+        check("e2e dev: an unreachable tampered box is a failure, exit 1",
+              rc == 1 and boxes[-1]["tampered"] and not boxes[-1]["ok"], boxes[-1]["detail"])
 
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
