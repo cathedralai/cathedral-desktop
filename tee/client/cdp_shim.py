@@ -37,13 +37,20 @@ async def dial(box: str):
     return await asyncio.open_connection(host, int(port))
 
 
-async def handle(local_r: asyncio.StreamReader, local_w: asyncio.StreamWriter, box: str, verify: Verify, target: str, ticket: str, mint=None):
+async def handle(local_r: asyncio.StreamReader, local_w: asyncio.StreamWriter, box: str, verify: Verify, target: str, ticket: str, mint=None,
+                 open_timeout: float = 15):
     t0 = time.monotonic()
+    w = None
     try:
-        r, w = await dial(box)
-        s = await open_stream(r, w, target=target, verify=verify, ticket=ticket, mint=mint)
-    except Exception as e:  # report to stderr, close the local side
-        print(f"shim: open failed: {e}", file=sys.stderr)
+        # One deadline for dial plus handshake: a relay that upgrades and then goes silent must not hold the
+        # local connection open forever.
+        async with asyncio.timeout(open_timeout):
+            r, w = await dial(box)
+            s = await open_stream(r, w, target=target, verify=verify, ticket=ticket, mint=mint)
+    except Exception as e:  # report to stderr, close both sides
+        print(f"shim: open failed: {type(e).__name__}: {e}", file=sys.stderr)
+        if w is not None:
+            w.close()
         local_w.close()
         return
     print(f"shim: stream open in {(time.monotonic() - t0) * 1000:.0f} ms, attestation {s.attestation}", file=sys.stderr)
@@ -83,6 +90,7 @@ async def main():
     ap.add_argument("--product", default="Genoa")
     ap.add_argument("--allow-any-measurement", action="store_true", help="accept any build when no --measurement is given (to learn a fingerprint; tests only)")
     ap.add_argument("--allow-dev", action="store_true", help="accept a dev box with no report (tests only)")
+    ap.add_argument("--open-timeout", type=float, default=15, help="seconds to reach the box and finish the handshake")
     a = ap.parse_args()
     if not is_relay_url(a.box) and ":" not in a.box:
         ap.error("--box takes HOST:PORT or a ws:// or wss:// URL")
@@ -99,7 +107,7 @@ async def main():
     # single use: one --ticket serves the first connection and nothing after it.
     mint = minter(a.ticket_key, a.target) if a.ticket_key else None
     server = await asyncio.start_server(
-        lambda r, w: handle(r, w, a.box, verify, a.target, a.ticket, mint), lh, int(lp))
+        lambda r, w: handle(r, w, a.box, verify, a.target, a.ticket, mint, a.open_timeout), lh, int(lp))
     print(f"shim: {a.target} via sealed stream to {a.box}, listening on {a.listen}", file=sys.stderr)
     async with server:
         await server.serve_forever()

@@ -88,7 +88,7 @@ async def text_relay_refused():
 
 def dead_relay_closes_local():
     shim = start([PY, os.path.join(HERE, "cdp_shim.py"), "--box", "ws://127.0.0.1:1/none", "--listen", "127.0.0.1:39433",
-                  "--allow-dev"], ready="listening")
+                  "--allow-dev", "--allow-any-measurement"], ready="listening")
     for attempt in (1, 2):
         c = socket.create_connection(("127.0.0.1", 39433), timeout=5)
         c.sendall(b"GET /json/version HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
@@ -99,6 +99,30 @@ def dead_relay_closes_local():
         c.close()
         check(f"dead relay: local connection {attempt} closed with no bytes", data == b"", repr(data))
     check("dead relay: shim still running", shim.poll() is None)
+
+
+async def stalled_relay_closes_local():
+    """A relay that completes the upgrade and then forwards nothing: the shim gives up at --open-timeout."""
+    from websockets.asyncio.server import serve
+
+    async def silent(ws):
+        await asyncio.sleep(30)
+
+    async with serve(silent, "127.0.0.1", 39481, subprotocols=["binary"]):
+        shim = start([PY, os.path.join(HERE, "cdp_shim.py"), "--box", "ws://127.0.0.1:39481", "--listen", "127.0.0.1:39434",
+                      "--allow-dev", "--allow-any-measurement", "--open-timeout", "2"], ready="listening")
+        r, w = await asyncio.open_connection("127.0.0.1", 39434)
+        w.write(b"GET /json/version HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        t0 = time.monotonic()
+        try:
+            data = await asyncio.wait_for(r.read(1), 10)
+        except asyncio.TimeoutError:
+            data = None
+        took = time.monotonic() - t0
+        w.close()
+        check("stalled relay: local connection closed at the open timeout", data == b"" and took < 8,
+              f"{data!r} after {took:.1f} s")
+        check("stalled relay: shim still running", shim.poll() is None)
 
 
 def drive(label, shim_port):
@@ -125,6 +149,7 @@ try:
     asyncio.run(jobs_through_relay("ws://127.0.0.1:39080"))
     asyncio.run(text_relay_refused())
     dead_relay_closes_local()
+    asyncio.run(stalled_relay_closes_local())
 
     start([CHROME, "--headless=new", "--remote-debugging-port=9655", "--remote-allow-origins=*", "--no-first-run",
            "--user-data-dir=/tmp/cdp-shim-ws-test-profile", "about:blank"])
@@ -144,7 +169,7 @@ try:
         start([PY, "-m", "websockify", "127.0.0.1:39180", "127.0.0.1:39544"])
         wait_port(39180)
         start([PY, os.path.join(HERE, "cdp_shim.py"), "--box", "ws://127.0.0.1:39180", "--listen", "127.0.0.1:39533",
-               "--ticket-key", key, "--allow-dev"], ready="listening")
+               "--ticket-key", key, "--allow-dev", "--allow-any-measurement"], ready="listening")
         drive("Playwright through the shim over a WebSocket relay, ticket per connection", 39533)
 finally:
     for p in procs:
