@@ -136,7 +136,9 @@ key. See "Threats covered and not".
   report checks). Tests: `node tee/web/test-snp-verify.mjs`, `node tee/web/test-sealed-stream.mjs BOXD`.
 - Native: `tee/client/sealed_stream.py` (cryptography lib) and `tee/client/cdp_shim.py`, a local
   TCP listener that opens one stream per connection so Playwright's `connect_over_cdp` and
-  browser-use work unchanged. Tests: `tee/client/test_sealed_stream.py BOXD`, `tee/client/test_cdp_shim.py`.
+  browser-use work unchanged. `--box` takes `HOST:PORT` or a `ws://`/`wss://` relay URL
+  (`tee/client/ws_pipe.py`, one WebSocket per connection; needs `pip install "websockets>=13"`, which websockify does not pull in). Tests: `tee/client/test_sealed_stream.py BOXD`,
+  `tee/client/test_cdp_shim.py`, `tee/client/test_cdp_shim_ws.py` (through websockify).
 - Relay for the spike: `websockify PORT BOX_IP:8444` on the host; it needs no change.
 
 Measured on the Mac against `boxd -dev` (no TEE, loopback): handshake 4 to 23 ms native, Playwright
