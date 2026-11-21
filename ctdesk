@@ -192,13 +192,14 @@ case "$cmd" in
       boot=", bootstrap $(( $(date +%s) - t_created ))s"
     fi
     t_start=$(date +%s)
-    ctcli sandbox exec "$id" --timeout 60 -- desktop-up --room "$id" $tunnel
+    # ctcli 0.6 sends a sealed command only in the foreground for 45 s or less; desktop-up takes about 13 s.
+    ctcli sandbox exec "$id" --timeout 45 -- desktop-up --room "$id" $tunnel
     t_ready=$(date +%s)
     echo "desktop ready in $(( t_ready - t0 ))s (create $(( t_created - t0 ))s${boot}, start $(( t_ready - t_start ))s)"
     [ -n "$tunnel" ] && "$0" url "$id"
     echo "next: $0 shot $id   |   $0 act $id -- mousemove 640 400 click 1   |   $0 down $id"
     ;;
-  up)   id="${1:?ID}"; shift; ctcli sandbox exec "$id" --timeout 60 -- desktop-up --room "$id" "$@" ;;
+  up)   id="${1:?ID}"; shift; ctcli sandbox exec "$id" --timeout 45 -- desktop-up --room "$id" "$@" ;;
   url)  id="${1:?ID}"
         echo "url:      $(ctcli sandbox download "$id" /work/desktop-url.txt -o - 2>/dev/null || echo '(no tunnel; run: ctdesk up ID --tunnel)')"
         echo "password: $(ctcli sandbox exec "$id" --timeout 20 -- cat /work/vnc-password 2>/dev/null || echo '(desktop not started)')" ;;
@@ -208,7 +209,7 @@ case "$cmd" in
   act)  id="${1:?ID}"; shift; [ "${1:-}" = "--" ] && shift
         ctcli sandbox exec "$id" --timeout 40 -- env DISPLAY=:1 xdotool "$@" ;;
   run)  id="${1:?ID}"; shift; [ "${1:-}" = "--" ] && shift
-        ctcli sandbox exec "$id" --timeout 120 -- "$@" ;;
+        ctcli sandbox exec "$id" --timeout 45 -- "$@" ;;
   down) id="${1:?ID}"; ctcli sandbox delete "$id" --yes ;;
   *) sed -n '2,12p' "$0"; exit 1 ;;
 esac
