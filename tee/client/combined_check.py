@@ -373,6 +373,18 @@ def load_fingerprints(a) -> list[str]:
     return fps
 
 
+def _exit_on_signals() -> None:
+    """SIGTERM and SIGHUP raise SystemExit, so the finally that halts a launched box still runs.
+
+    Each box runs in its own session (start_new_session), so it gets no terminal SIGHUP; the default
+    handlers would kill this runner without cleanup and leave the guest holding memory (AB#364).
+    """
+    def stop(signum, _frame):
+        raise SystemExit(128 + signum)
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, stop)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     src = ap.add_argument_group("boxes")
@@ -467,4 +479,5 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    _exit_on_signals()
     sys.exit(main())

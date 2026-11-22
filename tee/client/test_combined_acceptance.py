@@ -135,3 +135,40 @@ class DeadlineTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SignalCleanupTests(unittest.TestCase):
+    def test_sigterm_and_sighup_halt_the_launched_box(self):
+        import subprocess
+        import sys
+        here = Path(__file__).resolve().parent
+        script = (
+            "import time, combined_check as r\n"
+            "r._exit_on_signals()\n"
+            "b = r.Launched('exec sleep 300')\n"
+            "print(b.proc.pid, flush=True)\n"
+            "try:\n"
+            "    time.sleep(60)\n"
+            "finally:\n"
+            "    b.halt()\n"
+        )
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            proc = subprocess.Popen([sys.executable, "-c", script], cwd=here, stdout=subprocess.PIPE, text=True)
+            child = int(proc.stdout.readline())
+            try:
+                proc.send_signal(signum)
+                proc.wait(timeout=10)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    stat = Path(f"/proc/{child}/stat")
+                    if not stat.exists() or stat.read_text().split(") ", 1)[1].startswith("Z"):
+                        break
+                    time.sleep(0.02)
+                else:
+                    self.fail(f"box survived signal {signum}")
+            finally:
+                try:
+                    runner.os.killpg(child, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                proc.stdout.close()
