@@ -76,6 +76,9 @@ values; 0.0.13 is pinned because the c48 notes used it.
 ## What is and is not in this repository
 
 - Here: the manifest format, the fingerprint and check scripts, the unit tests, and the control.
+- Here since AB#433: the Cloud Hypervisor + stage0 IGVM fingerprint calculator
+  (`measure/igvm_measurement.py`, tested against 11 chip-signed values in `measure/testdata/igvm/`) and
+  the pinned `sev_kernel_hashes` stage0 build (`stage0/`).
 - Here since AB#363: recipes for the kernel and the initrd, in `recipes/`, and one command that
   rebuilds them, fetches the firmware and runs the check (`recipes/rebuild-and-check.sh`; see the
   top-level README, "Rebuild and check the fingerprint").

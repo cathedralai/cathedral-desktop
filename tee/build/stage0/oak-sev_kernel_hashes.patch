@@ -1,0 +1,26 @@
+diff --git a/stage0/BUILD b/stage0/BUILD
+index bcc83bb1b..c9c286869 100644
+--- a/stage0/BUILD
++++ b/stage0/BUILD
+@@ -26,7 +26,7 @@ rust_library(
+     name = "stage0",
+     srcs = glob(["src/**"]),
+     # Enable if you want to use kernel hashes
+-    # crate_features = ["sev_kernel_hashes"],
++    crate_features = ["sev_kernel_hashes"],
+     target_compatible_with = any_platform([
+         "//:x86_64-none-setting",
+         "//:x86_64-none-no_avx-setting",
+diff --git a/stage0_sev/BUILD b/stage0_sev/BUILD
+index 4ea49042b..8adef0328 100644
+--- a/stage0_sev/BUILD
++++ b/stage0_sev/BUILD
+@@ -25,7 +25,7 @@ rust_library(
+     name = "stage0_sev",
+     srcs = glob(["src/**/*.rs"]),
+     # Enable if you want to use kernel hashes
+-    # crate_features = ["sev_kernel_hashes"],
++    crate_features = ["sev_kernel_hashes"],
+     aliases = {"//stage0": "oak_stage0"},
+     deps = [
+         "//oak_attestation",
