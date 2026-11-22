@@ -40,7 +40,7 @@ Spike, from source only. No box was booted. Parent: AB#363 (publish the TEE box 
 ## What changes in the fingerprint
 
 - Inputs become: the stage0 IGVM file, kernel, initrd, command line, vCPU count and type, policy and the Cloud Hypervisor version.
-- The PR #7 tool reads OVMF as its firmware input through `sev-snp-measure`. It does not model an IGVM launch. An IGVM-aware calculator has to be added and checked against one chip-signed report, as run 5 was for QEMU.
+- The PR #7 tool reads OVMF as its firmware input through `sev-snp-measure`. It does not model an IGVM launch. An IGVM-aware calculator has to be added and checked against one chip-signed report, as run 5 was for QEMU. Done in AB#433: `tee/build/measure/igvm_measurement.py` reproduces 11 chip-signed values; the enforcing stage0 build and the negative control are in `tee/build/stage0/README.md`.
 
 ## Needs an AMD host (not done here)
 

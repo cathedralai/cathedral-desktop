@@ -1,0 +1,27 @@
+{
+  "about": "AB#433. Chip-signed SNP reports from the SNP test host (Contabo, EPYC 9224), Cloud Hypervisor 5eeaa6bd, fw_cfg kernel=on,cmdline=on,initramfs=on, 1 vCPU. 'hashed' is what the host wrote into the measured hash table; for the OFF-* boots the host served a different blob (negative control harness), and MEASUREMENT follows the hashed one. Boot logs: card AB#433 comments 32994381 and 32994255.",
+  "igvm": {
+    "stage0-default.igvm": "683cb6763f9cd37b0af3326aeafbfb96cca8fcc99b99533b4f4411492874b4e3",
+    "stage0-kernelhashes.igvm": "6f2606fb7efd8a8ce3776ea31bb0d194af621d8d87f2e0f810aa3a039e84997e"
+  },
+  "inputs": {
+    "vmlinuz": "ba394340c5ab8b955c250d456759ec0520a79c1bf591a7c3d45265f56c352a4e",
+    "bzImage": "40f5ac32a703528a850dd2cedb3de5cb5bfc383c5abbff1424a135d7a85bec35",
+    "initrd-A": "2677105cfa640c73ac53965d69beb6f7b6a377458c09187228b212b35a410393",
+    "initrd-B": "16385158bcc17afe98e1b45d6691731d96c2702c7be56feac8a8274d26b75151"
+  },
+  "cmdline_base": "console=ttyS0 panic=-1 sev_guest.vmpck_id=1",
+  "cases": [
+    {"boot": "A1", "igvm": "stage0-default.igvm", "kernel": "vmlinuz", "initrd": "initrd-A", "cmdline_suffix": "", "chip": "511dea4b9ecfb4f4c9f8ab459df60f87e48081d66475ba4ef17e842450a61a3ccad6b42e88dea4c0cd9b8b197dfa742c"},
+    {"boot": "A2", "igvm": "stage0-default.igvm", "kernel": "vmlinuz", "initrd": "initrd-A", "cmdline_suffix": "", "chip": "511dea4b9ecfb4f4c9f8ab459df60f87e48081d66475ba4ef17e842450a61a3ccad6b42e88dea4c0cd9b8b197dfa742c"},
+    {"boot": "B1", "igvm": "stage0-default.igvm", "kernel": "vmlinuz", "initrd": "initrd-B", "cmdline_suffix": "", "chip": "f136d6b3d64dd644e91f508800a69783e16aa6929b625e5930b682b93e6f26079387cb660a981d5bd2996bed9def0976"},
+    {"boot": "B2", "igvm": "stage0-default.igvm", "kernel": "vmlinuz", "initrd": "initrd-B", "cmdline_suffix": "", "chip": "f136d6b3d64dd644e91f508800a69783e16aa6929b625e5930b682b93e6f26079387cb660a981d5bd2996bed9def0976"},
+    {"boot": "A3-cmdline", "igvm": "stage0-default.igvm", "kernel": "vmlinuz", "initrd": "initrd-A", "cmdline_suffix": " quiet", "chip": "ce86988c7659452569cb284b354eeb5279e058f9f147bc21a686e2c5e2481457f1d54da289dad38ea2d4c88d8c9c6cbb"},
+    {"boot": "OFF-initrd", "igvm": "stage0-default.igvm", "kernel": "vmlinuz", "initrd": "initrd-A", "cmdline_suffix": "", "served": "initrd-B", "chip": "511dea4b9ecfb4f4c9f8ab459df60f87e48081d66475ba4ef17e842450a61a3ccad6b42e88dea4c0cd9b8b197dfa742c"},
+    {"boot": "OFF-cmdline", "igvm": "stage0-default.igvm", "kernel": "vmlinuz", "initrd": "initrd-A", "cmdline_suffix": " quiet", "served": "base cmdline", "chip": "ce86988c7659452569cb284b354eeb5279e058f9f147bc21a686e2c5e2481457f1d54da289dad38ea2d4c88d8c9c6cbb"},
+    {"boot": "OFF-kernel", "igvm": "stage0-default.igvm", "kernel": "bzImage", "initrd": "initrd-A", "cmdline_suffix": "", "served": "vmlinuz", "chip": "aceee6eb9be52e5b3d1f6a3c3104d7d2feec5e4adf9351a944e8f9fadc4c338cc8136ff8c446de48920fc5696285d32a"},
+    {"boot": "ON-A1", "igvm": "stage0-kernelhashes.igvm", "kernel": "vmlinuz", "initrd": "initrd-A", "cmdline_suffix": "", "chip": "1c69dec20183da277d24d4a61cd081ffbaaa224beba75cdf4d13538946967a101b938bae83c5926b00e9546d82b746d2"},
+    {"boot": "ON-A2", "igvm": "stage0-kernelhashes.igvm", "kernel": "vmlinuz", "initrd": "initrd-A", "cmdline_suffix": "", "chip": "1c69dec20183da277d24d4a61cd081ffbaaa224beba75cdf4d13538946967a101b938bae83c5926b00e9546d82b746d2"},
+    {"boot": "ON-B1", "igvm": "stage0-kernelhashes.igvm", "kernel": "vmlinuz", "initrd": "initrd-B", "cmdline_suffix": "", "chip": "84bd546e29d50e3a5920aeeafd118f018bc5a0d47961f4a595ccd75c283a9218cd53ea17862772f9e9ceedd9cdc7d276"}
+  ]
+}
