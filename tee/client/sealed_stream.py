@@ -332,4 +332,7 @@ async def open_stream(r: asyncio.StreamReader, w: asyncio.StreamWriter, target: 
     if not ready.get("ok"):
         raise RuntimeError(f"box refused: {ready.get('error')}")
     send, recv = hs.split()
-    return Stream(r, w, send, recv, attestation)
+    s = Stream(r, w, send, recv, attestation)
+    # What the handshake was bound to, so a caller can compare it with a report fetched elsewhere.
+    s.report, s.static, s.binding = report, rs, att.get("binding", "")
+    return s
