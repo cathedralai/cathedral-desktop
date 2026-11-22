@@ -42,7 +42,7 @@ uv venv .venv && uv pip install --python .venv/bin/python anthropic
 
 Screenshots and `receipts.json` land in `runs/<timestamp>/`. The log records exec request IDs, not
 signed receipt IDs; `complete: true` means the agent ended normally, not that the receipts passed
-verification. Before claiming a live proof, download the sandbox evidence and check it offline:
+verification. Before you call a live run verified, download the sandbox evidence and check it offline:
 
 ```sh
 ctcli sandbox evidence ID -o bundle.json
@@ -143,6 +143,27 @@ What this does and does not show (details in `tee/build/README.md`):
   is `deny_all`.
 - Receipts are public JSON: `GET https://cathedral.computer/v1/receipts/<room_receipt_id>`, one per
   create, exec and file read, chained by `prev_sha256` and signed by Cathedral.
+
+## The TEE box (tee/)
+
+`tee/` holds a desktop that runs inside an AMD SEV-SNP confidential machine, and the code that checks it.
+What is true today, and what is not yet, is in [tee/PROMISE.md](tee/PROMISE.md).
+
+- The TEE box runs inside an AMD SEV-SNP confidential machine. The chip encrypts its memory.
+- Before the client sends its ticket or anything you type, it checks the box's attestation report: the AMD
+  certificate chain, the report's signature, the build fingerprint against the list the client is given, and
+  that the machine does not allow debugging or migration. A link can waive the build list; the page then
+  shows ANY BUILD ACCEPTED. The Python client's test flags waive these checks.
+- If a check fails, the page stops and says which one.
+- The client encrypts to a key that only the checked box holds. Relays and the network carry encrypted
+  frames. They see sizes, timing and the box's report: chip id, build fingerprint, firmware level.
+- The box has no disk it can write to. Its work lives in encrypted memory and is gone when it stops.
+- Today Cathedral holds the key that opens a box, so Cathedral can see its screen.
+- Whoever serves the viewer page can see the screen it shows. Today the relay that carries the stream also
+  serves the page.
+- The host can stop the box, cut the stream, see the names the box looks up and the sites it connects to,
+  and read anything it sends unencrypted.
+- Reports are vouched for by the AMD chip.
 
 ## Security notes
 

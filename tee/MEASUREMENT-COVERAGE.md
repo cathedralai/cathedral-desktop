@@ -35,7 +35,7 @@ Spike, from source only. No box was booted. Parent: AB#363 (publish the TEE box 
 - Our verifiers check MEASUREMENT, the REPORT_DATA binding and a firmware (TCB) floor: `tee/client/sealed_stream.py:131-141,168-172`, `tee/web/snp-verify.js:219-228`. Neither reads a DICE event log, so neither sees stage0's kernel, initrd or command line digests.
 - Our report comes from boxd after boot, not from stage0. Any kernel that boots can ask the chip for a report with its own REPORT_DATA. MEASUREMENT does not change with the initrd unless the hash table is both measured and enforced.
 - The sealed data volume key (`cathedral-sandbox` `room-kit/sealed/sealed_data_key.py:56`, `docs/SEALED_DATA_VOLUME.md:81`) binds MEASUREMENT and policy. An unenforced initrd would derive the same key and could open a customer's workspace.
-- A naive check on a host gives a false pass. With stock Cloud Hypervisor, two boxes that differ only in initrd will show different MEASUREMENTs, because the table is measured. That proves measurement, not enforcement. A negative control must serve a different initrd than the one hashed.
+- A naive check on a host gives a false pass. With stock Cloud Hypervisor, two boxes that differ only in initrd will show different MEASUREMENTs, because the table is measured. That shows measurement, not enforcement. A negative control must serve a different initrd than the one hashed.
 
 ## What changes in the fingerprint
 
