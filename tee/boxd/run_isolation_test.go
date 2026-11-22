@@ -31,7 +31,7 @@ func TestStoredRunIgnoresRestrictiveUmask(t *testing.T) {
 func TestRunCommandConfinesFilesystem(t *testing.T) {
 	cmd := isolatedRunCommand(context.Background(), "/private/job-root", nil)
 	a := cmd.SysProcAttr
-	if cmd.Path != "/job" || a.Chroot != "/private/job-root" || !a.Setpgid || a.Credential.Uid != runUID || a.Credential.Gid != runUID || !a.Credential.NoSetGroups {
+	if cmd.Path != "/job" || a.Chroot != "/private/job-root" || !a.Setpgid || a.Credential.Uid != runUID || a.Credential.Gid != runUID || a.Credential.NoSetGroups {
 		t.Fatal("missing execution boundary")
 	}
 	if a.Cloneflags != syscall.CLONE_NEWNS|syscall.CLONE_NEWPID|syscall.CLONE_NEWNET {
@@ -68,6 +68,7 @@ func TestRunRootHidesHostFilesAndSockets(t *testing.T) {
 import("fmt";"net";"os")
 func main(){
  if os.Getuid()!=65534 {panic("not nobody")}
+ if g,e:=os.Getgroups();e!=nil || len(g)!=0 {panic("supplementary groups retained")}
  if _,e:=os.ReadFile(os.Args[1]);e==nil {panic("host file visible")}
  if c,e:=net.Dial("unix",os.Args[2]);e==nil {c.Close();panic("host socket reachable")}
  if _,e:=os.Stat("/proc");e==nil {panic("host proc visible")}

@@ -250,7 +250,7 @@ func isolatedRunCommand(ctx context.Context, root string, args []string) *exec.C
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid:    true,
 		Chroot:     root,
-		Credential: &syscall.Credential{Uid: runUID, Gid: runUID, NoSetGroups: true},
+		Credential: &syscall.Credential{Uid: runUID, Gid: runUID, Groups: []uint32{}},
 		Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNET,
 	}
 	return cmd
