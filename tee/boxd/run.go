@@ -14,7 +14,8 @@ package main
 // The uploaded code must not reach what makes the box trustworthy: boxd runs as root, and root
 // could ask configfs-tsm for a report over its own REPORT_DATA or read boxd's keys out of /proc.
 // So when boxd is root the child runs as an unprivileged uid in its own process group and its own
-// pid, mount and network namespaces (no loopback route to VNC, CDP or boxd itself).
+// pid, mount and network namespaces, with a private filesystem root containing only the static
+// job. Namespace cloning alone does not hide pathname sockets such as the desktop X11 socket.
 
 import (
 	"bytes"
@@ -192,6 +193,9 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 
 func runBinary(parent context.Context, bin []byte, args []string, timeout time.Duration) (runResult, []byte, error) {
 	res := runResult{SHA256: hex.EncodeToString(sha256Of(bin))}
+	if os.Geteuid() != 0 {
+		return res, nil, errors.New("isolated execution requires root")
+	}
 	dir, err := os.MkdirTemp("", "run-")
 	if err != nil {
 		return res, nil, errors.New("no scratch space")
@@ -200,24 +204,17 @@ func runBinary(parent context.Context, bin []byte, args []string, timeout time.D
 	if err := os.Chmod(dir, 0o711); err != nil {
 		return res, nil, errors.New("no scratch space")
 	}
-	path := filepath.Join(dir, "job")
-	if err := os.WriteFile(path, bin, 0o755); err != nil {
-		return res, nil, errors.New("could not store binary")
+	if err := storeRunBinary(dir, bin); err != nil {
+		return res, nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := isolatedRunCommand(ctx, dir, args)
 	cmd.Dir = "/"
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=/"}
 	out := &cappedBuffer{max: runMaxOutput}
 	cmd.Stdout, cmd.Stderr = out, out
-	attr := &syscall.SysProcAttr{Setpgid: true}
-	if os.Geteuid() == 0 {
-		attr.Credential = &syscall.Credential{Uid: runUID, Gid: runUID, NoSetGroups: true}
-		attr.Cloneflags = syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNET
-	}
-	cmd.SysProcAttr = attr
 	// Kill the whole process group, not just the direct child, and stop waiting on pipes that a
 	// forked descendant still holds.
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
@@ -244,4 +241,29 @@ func runBinary(parent context.Context, bin []byte, args []string, timeout time.D
 	}
 	res.Bytes, res.Truncated = out.buf.Len(), out.truncated
 	return res, out.buf.Bytes(), nil
+}
+
+// The executable is static: it needs no host libraries, devices, procfs or desktop IPC.
+// Chroot occurs before dropping privileges in os/exec; the root is not writable by the job.
+func isolatedRunCommand(ctx context.Context, root string, args []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "/job", args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid:    true,
+		Chroot:     root,
+		Credential: &syscall.Credential{Uid: runUID, Gid: runUID, NoSetGroups: true},
+		Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNET,
+	}
+	return cmd
+}
+
+func storeRunBinary(dir string, bin []byte) error {
+	path := filepath.Join(dir, "job")
+	if err := os.WriteFile(path, bin, 0o755); err != nil {
+		return errors.New("could not store binary")
+	}
+	// WriteFile applies the daemon umask; the dropped uid still needs execute permission.
+	if err := os.Chmod(path, 0o555); err != nil {
+		return errors.New("could not prepare binary")
+	}
+	return nil
 }

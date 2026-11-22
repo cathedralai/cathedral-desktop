@@ -92,10 +92,22 @@ async def run_raw(port, header, payload, ticket="", target="run"):
     return head, out
 
 
+def static_job(body):
+    """Match the upload contract: no shell or dynamic loader from the desktop filesystem."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src, binary = os.path.join(tmp, "job.c"), os.path.join(tmp, "job")
+        with open(src, "w") as f:
+            f.write("#include <stdio.h>\n#include <unistd.h>\n#include <stdlib.h>\n"
+                    "#include <sys/stat.h>\nint main(int argc, char **argv) {" + body + "}")
+        subprocess.run(["cc", "-static", "-O2", "-o", binary, src], check=True, capture_output=True)
+        with open(binary, "rb") as f:
+            return f.read()
+
+
 async def run_target():
     box = start_boxd("-noticket")
     try:
-        job = b"#!/bin/sh\necho hello from $1; echo to stderr >&2; exit 3\n"
+        job = static_job('printf("hello from %s\\n", argv[1]); fprintf(stderr,"to stderr\\n"); return 3;')
         t0 = time.monotonic()
         head, out = await run_raw(28644, {"size": len(job), "args": ["box"]}, job)
         check("run: exit code and combined output come back", head.get("exit") == 3
@@ -104,14 +116,13 @@ async def run_target():
         check("run: the box reports the sha256 of what it ran", head.get("sha256") == hashlib.sha256(job).hexdigest())
 
         if os.geteuid() == 0:
-            probe = b"#!/bin/sh\nid -u; cat /proc/net/dev\n"
+            probe = static_job('struct stat st; printf("%d\\n",getuid()); printf("proc_hidden=%d\\n",stat("/proc", &st)!=0); return 0;')
             head, out = await run_raw(28644, {"size": len(probe)}, probe)
             lines = out.decode().split()
             check("run: as root, the job runs as nobody", lines[:1] == ["65534"], lines[:1])
-            ifaces = [ln.split(":")[0].strip() for ln in out.decode().splitlines() if ":" in ln]
-            check("run: as root, the job has its own network (loopback only)", ifaces == ["lo"], str(ifaces))
+            check("run: job cannot see host procfs", "proc_hidden=1" in lines, str(lines))
 
-        sleeper = b"#!/bin/sh\nsleep 30 &\nsleep 30\n"
+        sleeper = static_job('if (fork()==0) {sleep(30); return 0;} sleep(30); return 0;')
         t0 = time.monotonic()
         head, _ = await run_raw(28644, {"size": len(sleeper), "timeout_s": 1}, sleeper)
         took = time.monotonic() - t0
@@ -121,13 +132,13 @@ async def run_target():
         # A client that hangs up mid-job frees the box: the next job is not answered "busy".
         r, w = await asyncio.open_connection("127.0.0.1", 28644)
         s = await open_stream(r, w, target="run", verify=Verify(allow_dev=True))
-        long_job = b"#!/bin/sh\nsleep 120\n"
+        long_job = static_job('sleep(120); return 0;')
         await s.send(json.dumps({"size": len(long_job), "timeout_s": 300}).encode())
         await s.send(long_job)
         await asyncio.sleep(0.5)
         s.close()
         t0 = time.monotonic()
-        quick = b"#!/bin/sh\necho again\n"
+        quick = static_job('puts("again"); return 0;')
         while True:
             try:
                 head, out = await run_raw(28644, {"size": len(quick)}, quick)
@@ -161,7 +172,7 @@ async def run_target():
         box = start_boxd("-ticket-key", os.path.join(tmp, "ticket.pub"), tls=28743, stream=28744)
         try:
             static = await mint_ticket.box_static_key("127.0.0.1", 28744)
-            job = b"#!/bin/sh\necho ok\n"
+            job = static_job('puts("ok"); return 0;')
             head, _ = await run_raw(28744, {"size": len(job)}, job,
                                     ticket=mint_ticket.issue(key, box_static=static, target="job"))
             check("run: a ticket for target job does not open run", "refused" in head, str(head))
@@ -175,9 +186,8 @@ async def run_target():
 def end_to_end():
     with tempfile.TemporaryDirectory() as tmp:
         job = os.path.join(tmp, "job")
-        with open(job, "w") as f:
-            # The expected text comes after the 200 characters kept for the table: the check reads all of it.
-            f.write("#!/bin/sh\nprintf '%0300d\\n' 0\necho hello\nexit 3\n")
+        with open(job, "wb") as f:
+            f.write(static_job('printf("%0300d\\nhello\\n",0); return 3;'))
         launch = f"exec {BOXD} -dev -noticket -tls 127.0.0.1:{{tls_port}} -stream 127.0.0.1:{{stream_port}}"
         common = ["--launch", launch, "--host", "127.0.0.1", "--tls-port", "29443", "--stream-port", "29444",
                   "--port-stride", "2", "--binary", job, "--expect-exit", "3", "--expect-output", "hello",

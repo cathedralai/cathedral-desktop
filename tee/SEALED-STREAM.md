@@ -30,9 +30,10 @@ L bytes of combined stdout and stderr; or `{"error":"..."}`. Limits: 64 MiB bina
 when the process was killed. A box running `-noticket` outside `-dev` refuses `run`.
 
 boxd is root inside the box, and root could ask configfs-tsm for a report over any REPORT_DATA or
-read the box keys from `/proc`. So when boxd is root the job runs as uid 65534 in its own process
-group and its own pid, mount and network namespaces (loopback only: no route to VNC, CDP or boxd),
-and the timeout kills the whole group.
+read the box keys from `/proc`. The run target requires root to establish confinement, then runs the job as uid 65534 in its own
+process group and pid, mount and network namespaces. Its private filesystem root contains only
+the read-only static job: no desktop sockets, host files, procfs, shell or dynamic libraries.
+The job cannot write that root, and the timeout kills the whole group. Non-root boxd refuses jobs.
 
 ## Key binding
 

@@ -109,7 +109,7 @@ jobs:
       - name: Tampering relay, browser stream library (AB#591)
         run: node tee/web/test-tamper-relay.mjs "$RUNNER_TEMP/bin/boxd"
       - name: Combined box check and the run target (AB#364)
-        run: python tee/client/test_combined_check.py "$RUNNER_TEMP/bin/boxd"
+        run: sudo env "PATH=$PATH" "$(command -v python)" tee/client/test_combined_check.py "$RUNNER_TEMP/bin/boxd"
 
   browser:
     needs: boxd
