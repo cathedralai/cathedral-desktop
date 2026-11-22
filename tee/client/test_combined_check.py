@@ -129,7 +129,15 @@ async def run_target():
         t0 = time.monotonic()
         quick = b"#!/bin/sh\necho again\n"
         while True:
-            head, out = await run_raw(28644, {"size": len(quick)}, quick)
+            try:
+                head, out = await run_raw(28644, {"size": len(quick)}, quick)
+            except ConnectionResetError:
+                # A busy refusal can close the stream while run_raw is still writing.
+                # The disconnect must still free the box within the same deadline.
+                if time.monotonic() - t0 > 10:
+                    raise
+                await asyncio.sleep(0.2)
+                continue
             if head.get("error") != "busy" or time.monotonic() - t0 > 10:
                 break
             await asyncio.sleep(0.2)
