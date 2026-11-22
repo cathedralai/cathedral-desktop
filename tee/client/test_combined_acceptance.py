@@ -133,10 +133,6 @@ class DeadlineTests(unittest.IsolatedAsyncioTestCase):
             await server.wait_closed()
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class SignalCleanupTests(unittest.TestCase):
     def test_sigterm_and_sighup_halt_the_launched_box(self):
         import subprocess
@@ -172,3 +168,7 @@ class SignalCleanupTests(unittest.TestCase):
                 except (ProcessLookupError, PermissionError):
                     pass
                 proc.stdout.close()
+
+
+if __name__ == '__main__':
+    unittest.main()
