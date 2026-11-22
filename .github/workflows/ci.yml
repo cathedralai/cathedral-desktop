@@ -64,6 +64,8 @@ jobs:
       - run: pip install "cryptography==${CRYPTOGRAPHY_VERSION}"
       - name: Browser verifier
         run: node tee/web/test-snp-verify.mjs
+      - name: Combined runner acceptance and cleanup
+        run: python tee/client/test_combined_acceptance.py
       - name: Python verifier
         run: python tee/client/test_verify_snp.py
       - name: CDP shim argument check

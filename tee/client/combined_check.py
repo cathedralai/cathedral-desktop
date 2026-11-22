@@ -21,7 +21,7 @@ that is already up (boot time is then not measured).
 
 Exit 0 only when every box passes every step and every tampered box is refused at the MEASUREMENT check.
 A tampered box that fails to boot, answer or serve a report is a failure, not a refusal. A run with
-no tampered box, no box booted by --launch, or --allow-dev exits 2 (INCOMPLETE): a smoke check, not
+no tampered box, fewer than ten boxes booted by --launch, or --allow-dev exits 2 (INCOMPLETE): a smoke check, not
 AB#364 evidence.
 """
 from __future__ import annotations
@@ -63,6 +63,7 @@ class Launched:
 
     def __init__(self, cmd: str):
         self.t0 = time.monotonic()
+        self._halted = False
         # Own session, so halting kills the hypervisor and not just the shell around it.
         self.proc = subprocess.Popen(cmd, shell=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True, errors="replace",
@@ -94,12 +95,16 @@ class Launched:
                 return line
 
     def halt(self):
-        if self.proc.poll() is None:
-            try:
-                os.killpg(self.proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        if self._halted:
+            return
+        # A shell wrapper may exit while its hypervisor keeps this group alive.
+        # Reap the whole owned group even when the group leader has exited.
+        try:
+            os.killpg(self.proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         self.proc.wait()
+        self._halted = True
 
 
 def net_address(console: list[str]) -> str | None:
@@ -315,19 +320,23 @@ def tampered_refusal(e: Exception) -> str | None:
     return None
 
 
-async def _attest_only(host: str, port: int) -> tuple[bytes, str]:
-    """HELLO and ATTEST only: the box's stream key and binding, without asking for a target."""
+async def _attest_only(host: str, port: int, timeout: float = 10.0) -> tuple[bytes, str]:
+    """Bound the whole HELLO/ATTEST exchange, including connect and trickled frames."""
     from sealed_stream import b64u_decode, read_frame, write_frame
-    r, w = await asyncio.open_connection(host, port)
-    try:
-        write_frame(w, json.dumps({"v": 1}).encode())
-        await w.drain()
-        att = json.loads(await read_frame(r))
-        if "error" in att or not att.get("report"):
-            raise RuntimeError("box presented no attestation report")
-        return b64u_decode(att["static"]), att["binding"]
-    finally:
-        w.close()
+
+    async def exchange():
+        r, w = await asyncio.open_connection(host, port)
+        try:
+            write_frame(w, json.dumps({"v": 1}).encode())
+            await w.drain()
+            att = json.loads(await read_frame(r))
+            if "error" in att or not att.get("report"):
+                raise RuntimeError("box presented no attestation report")
+            return b64u_decode(att["static"]), att["binding"]
+        finally:
+            w.close()
+
+    return await asyncio.wait_for(exchange(), timeout)
 
 
 # ---- report
@@ -434,12 +443,12 @@ def main(argv=None) -> int:
     passed = all(r["ok"] for r in results) and all(ok for _, ok, _ in offline)
     good = sum(1 for r in results if r["ok"] and not r["tampered"])
     refused = sum(1 for r in results if r["ok"] and r["tampered"])
-    # Evidence needs a tampered box refused, at least one box booted here and timed, and real SNP reports.
+    # Evidence needs a tampered box refused, ten boxes booted here and timed, and real SNP reports.
     # Anything less is a smoke run: no tampered box shows nothing about refusal, --box measures no boot,
     # and --allow-dev accepts boxes with no report.
     missing = [why for why, bad in (("no tampered box", not any(r["tampered"] for r in results)),
-                                    ("no box booted by --launch", not any("boot" in r["ms"] for r in results
-                                                                         if not r["tampered"])),
+                                    ("fewer than ten boxes booted by --launch", sum("boot" in r["ms"] for r in results
+                                                                                  if not r["tampered"]) < 10),
                                     ("--allow-dev", a.allow_dev)) if bad]
     complete = not missing
     verdict = ("ALL CHECKS PASSED" if complete else f"INCOMPLETE ({', '.join(missing)})") if passed else "FAILED"

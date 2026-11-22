@@ -137,8 +137,12 @@ exit code). One box at a time; each box is killed (process group) before the nex
 Inputs: an image with the `run` target in boxd (this changes the root hash, so the MEASUREMENT
 moves: publish the new one for AB#363 first), a launch script that boots one box with the serial
 console on stdout (the QEMU line above, or Cloud Hypervisor), a static test binary, and a tampered
-image (for example the same rootfs with one file changed and a fresh root hash, or the same image
-with SNP policy debug allowed).
+image that boots and serves a genuine report with a different MEASUREMENT (for example the same
+rootfs with one file changed and a fresh root hash). Keep SNP debug policy disabled: a debug-policy
+refusal is a different check and does not satisfy this measurement negative control. The launcher
+and its children must remain in the process group created by the runner; do not daemonize or use
+setsid to escape it. Prefer exec for the hypervisor. An exited shell wrapper does not prevent
+cleanup of children that remain in that group.
 
 ```sh
 K=~/Documents/TOOLS/.credentials/cathedral-tee-ticket-20261106.key
@@ -155,5 +159,9 @@ python3 tee/client/combined_check.py --boxes 10 \
 It prints one line per box, a table of per-step times (boot to `LISTEN`, or to `DESKTOP ready`
 with `--wait-desktop`; report; link; verify; job) with min, median and max, the offline tamper
 checks on a real report, and `ALL CHECKS PASSED` with exit 0 only when all ten pass and the tampered
-box is refused. A tampered box counts as refused whether it fails to boot (verity), serves no
-report, or fails verification; it never gets a job. Post the table and the JSON on AB#364.
+box is refused specifically for a MEASUREMENT outside the published allowlist. Failed boot,
+missing report, transport timeout and other verifier failures are failures, not a passing negative
+control. The whole tampered HELLO/ATTEST exchange has a ten-second deadline; no job is sent.
+Fewer than ten normally booted boxes, no tampered box, or --allow-dev is INCOMPLETE (exit 2), even
+if individual checks pass. Pre-existing --box hosts do not count toward the ten boots. Post the
+table and the JSON on AB#364.
