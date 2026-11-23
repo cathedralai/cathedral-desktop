@@ -141,3 +141,36 @@ jobs:
           BOXD: ${{ runner.temp }}/bin/boxd
           CHROME: google-chrome
         run: python tee/client/test_cdp_shim.py
+
+  # Builds the desktop image and starts the desktop the way a room does, with the default display and
+  # with KasmVNC (--server kasm), under Docker's runtime and under gVisor (what sealed rooms run under).
+  # New: not a required check until it has run green about ten times in a row.
+  desktop-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        server: [x11vnc, kasm]
+        runtime: [runc, runsc]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install gVisor
+        if: matrix.runtime == 'runsc'
+        run: |
+          set -euo pipefail
+          base="https://storage.googleapis.com/gvisor/releases/release/latest/x86_64"
+          curl -fsSL -O "$base/runsc" -O "$base/runsc.sha512"
+          sha512sum -c runsc.sha512
+          sudo install -m 755 runsc /usr/local/bin/runsc
+          sudo /usr/local/bin/runsc install
+          sudo systemctl restart docker
+          docker info --format '{{json .Runtimes}}'
+      - name: Build the desktop image
+        run: docker build -t cathedral-desktop:ci .
+      - name: Image size
+        run: docker image inspect cathedral-desktop:ci --format '{{.Size}}' | awk '{printf "image size: %.0f MiB\n", $1/1048576}'
+      - name: Smoke test (${{ matrix.server }} under ${{ matrix.runtime }})
+        run: bash desktop/test-image-smoke.sh cathedral-desktop:ci "${{ matrix.server }}" "${{ matrix.runtime }}"
