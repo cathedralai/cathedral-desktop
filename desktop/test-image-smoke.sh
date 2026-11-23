@@ -1,7 +1,7 @@
 #!/bin/bash
 # Smoke test of the built desktop image: start the desktop the way a room does (exec desktop-up),
 # then check input, screenshot and the web port. Usage: test-image-smoke.sh IMAGE SERVER [RUNTIME]
-#   SERVER   x11vnc | kasm      RUNTIME  runc (default) | runsc (gVisor, what sealed rooms run under)
+#   SERVER   x11vnc | tigervnc | kasm      RUNTIME  runc (default) | runsc (gVisor, what sealed rooms run under)
 # No tunnel is started, so the test needs no network after the image is built.
 set -u
 IMAGE="${1:?image}"; SERVER="${2:?x11vnc or kasm}"; RUNTIME="${3:-runc}"
@@ -35,6 +35,19 @@ if [ "$SERVER" = kasm ]; then
   x pgrep -x Xvfb   >/dev/null 2>&1 && bad "Xvfb is running in kasm mode"   || ok "no Xvfb in kasm mode"
 else
   c="$(code http://127.0.0.1:6080/)"; [ "$c" = 200 ] && ok "web port serves the viewer page (200)" || bad "web port answered $c, want 200"
+  # The VNC server behind the page: it must ask for the password (security type 2) and never offer "none" (1).
+  rfb="$(x python3 -c '
+import socket
+s = socket.create_connection(("127.0.0.1", 5901), timeout=5)
+banner = s.recv(12); s.sendall(banner)
+n = s.recv(1)[0]; types = list(s.recv(n)) if n else []
+print(banner.decode().strip(), "types", sorted(types))' 2>&1 | tail -1)"
+  case "$rfb" in "RFB 003.008 types [2]") ok "VNC on 5901 offers password auth only ($rfb)" ;; *) bad "VNC on 5901 said: $rfb (want RFB 003.008 types [2])" ;; esac
+  if [ "$SERVER" = tigervnc ]; then
+    x pgrep -x x11vnc >/dev/null 2>&1 && bad "x11vnc is running in tigervnc mode" || ok "no x11vnc in tigervnc mode"
+    x pgrep -x Xvfb   >/dev/null 2>&1 && bad "Xvfb is running in tigervnc mode"   || ok "no Xvfb in tigervnc mode"
+    x pgrep -x Xtigervnc >/dev/null 2>&1 && ok "Xtigervnc is the display" || bad "Xtigervnc is not running"
+  fi
 fi
 # Wallpaper choice (--wallpaper). bg prints "<unique colours> <colour>" for a 900x450 region of bare desktop
 # (below the panel, away from the pointer). A solid background is exactly "1 RRGGBB". The first check is
@@ -105,7 +118,7 @@ x step --settle abc >/dev/null 2>&1; [ $? = 2 ] && ok "step refuses a bad --sett
 two() { x bash -c 'for i in $(seq 15); do s=$(date +%s%N); env DISPLAY=:1 xdotool mousemove 200 300 click 1 >/dev/null 2>&1; shot --jpeg 60 --scale 50 >/dev/null 2>&1; e=$(date +%s%N); echo $(( (e-s)/1000000 )); done | sort -n | sed -n 8p'; }
 echo "info median of 15, in the room, $SERVER under $RUNTIME: click then screenshot as two commands $(two) ms; step --settle 0 (one command) $(med step --settle 0 --jpeg 60 --scale 50 -- mousemove 200 300 click 1) ms. Through the API each command is also one exec round trip, which this does not measure"
 # Asking for the other display server on a running desktop must refuse and leave everything as it was.
-oth=kasm; [ "$SERVER" = kasm ] && oth=x11vnc
+oth=kasm; [ "$SERVER" = kasm ] && oth=tigervnc
 x desktop-up --server "$oth" --room smoke >/dev/null 2>&1; rc=$?
 [ "$rc" = 2 ] && ok "switching to --server $oth on a running desktop is refused" || bad "switching to --server $oth exited $rc, want 2"
 x desktop-up --server "$oth" --restart --room smoke >/dev/null 2>&1; rc=$?
@@ -117,6 +130,6 @@ if [ "$SERVER" = kasm ]; then c="$(code -u "cathedral:$pw" http://127.0.0.1:6080
 x desktop-up --server "$SERVER" --room smoke >/dev/null 2>&1 && ok "second desktop-up is harmless" || bad "second desktop-up failed"
 x env DISPLAY=:1 xdpyinfo >/dev/null 2>&1 && ok "display survives the second call" || bad "display gone after the second call"
 if [ "$fail" != 0 ]; then
-  echo "---- logs"; for f in kasmvnc xvfb x11vnc websockify openbox; do echo "## $f"; x sh -c "tail -n 40 /run/desktop/$f.log 2>/dev/null"; done
+  echo "---- logs"; for f in kasmvnc tigervnc xvfb x11vnc websockify openbox; do echo "## $f"; x sh -c "tail -n 40 /run/desktop/$f.log 2>/dev/null"; done
 fi
 exit "$fail"

@@ -13,6 +13,8 @@
 #                      as /work/wallpaper.png. The choice is kept in /work/desktop-wallpaper, so a later
 #                      desktop-up or --restart keeps it. Only cathedral puts the name on the right-click
 #                      menu. A customer's desktop carries no Cathedral branding unless they ask for it.
+#        --server tigervnc  TigerVNC is the display (no Xvfb, no x11vnc scraping it). Standard RFB, so the
+#                      page, the link and the password are the same as the default. Opt in.
 #        --server kasm  KasmVNC is the display and the web server (no Xvfb, x11vnc or websockify). Opt in,
 #                      for the speed test: it sends only changed regions as WebP/JPEG. The web client on
 #                      6080 asks for user "cathedral" and the same password. Default stays x11vnc.
@@ -33,7 +35,10 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-case "$SERVER" in x11vnc|kasm) ;; *) echo "desktop-up: --server must be x11vnc or kasm" >&2; exit 2 ;; esac
+case "$SERVER" in x11vnc|kasm|tigervnc) ;; *) echo "desktop-up: --server must be x11vnc, tigervnc or kasm" >&2; exit 2 ;; esac
+if [ "$SERVER" = tigervnc ] && ! command -v Xtigervnc >/dev/null; then
+  echo "desktop-up: --server tigervnc needs TigerVNC in the image (tigervnc-standalone-server)" >&2; exit 2
+fi
 if [ "$SERVER" = kasm ] && ! command -v Xkasmvnc >/dev/null; then
   echo "desktop-up: --server kasm needs KasmVNC in the image (build with KASMVNC_VERSION set)" >&2; exit 2
 fi
@@ -53,11 +58,14 @@ running() {
 # The display server cannot be swapped under a running desktop: Xvfb or Xkasmvnc IS display :1, and every
 # open app lives on it. Asking for the other one used to skip the start quietly and report "ready" with
 # the old viewer still up (and --restart then left no viewer at all). Refuse instead, and change nothing.
-other=Xvfb; [ "$SERVER" = x11vnc ] && other=Xkasmvnc
-if running -x "$other"; then
-  echo "desktop-up: this desktop already runs on $other; --server $SERVER needs a fresh room (the display cannot be switched while apps are open)" >&2
-  exit 2
-fi
+mine=Xvfb; [ "$SERVER" = kasm ] && mine=Xkasmvnc; [ "$SERVER" = tigervnc ] && mine=Xtigervnc
+for other in Xvfb Xkasmvnc Xtigervnc; do
+  [ "$other" = "$mine" ] && continue
+  if running -x "$other"; then
+    echo "desktop-up: this desktop already runs on $other; --server $SERVER needs a fresh room (the display cannot be switched while apps are open)" >&2
+    exit 2
+  fi
+done
 # A process that is still exiting must not count as running either, so --restart waits.
 desktop_procs_alive() {
   running -x openbox || running -x tint2 || running -x picom || running -x x11vnc || running -f websockify
@@ -118,6 +126,16 @@ if ! xdpyinfo >/dev/null 2>&1; then
     setsid Xkasmvnc :1 -geometry "$RES" -depth 24 -nolisten tcp -ac -SecurityTypes None $KASM_AUTH \
       -interface 127.0.0.1 -websocketPort 6080 -httpd /usr/share/kasmvnc/www -sslOnly 0 -AlwaysShared \
       -FrameRate 60 >/run/desktop/kasmvnc.log 2>&1 < /dev/null &
+  elif [ "$SERVER" = tigervnc ]; then
+    # TigerVNC is the X server itself too, so nothing scrapes the screen, and it speaks standard RFB with
+    # the standard password file. The viewer page, the link and the password stay exactly as with x11vnc.
+    if [ "$VNC_AUTH" = none ]; then TIGER_AUTH="-SecurityTypes None"
+    else
+      x11vnc -storepasswd "$PW" /run/desktop/vncpass >/dev/null 2>&1
+      TIGER_AUTH="-SecurityTypes VncAuth -rfbauth /run/desktop/vncpass"
+    fi
+    setsid Xtigervnc :1 -geometry "$RES" -depth 24 -nolisten tcp -ac -rfbport 5901 -localhost=1 $TIGER_AUTH \
+      -AlwaysShared >/run/desktop/tigervnc.log 2>&1 < /dev/null &
   else
     setsid Xvfb :1 -screen 0 "${RES}x24" -nolisten tcp -ac +extension RANDR >/run/desktop/xvfb.log 2>&1 < /dev/null &
   fi
@@ -153,21 +171,24 @@ case "$WALL" in
     else echo "desktop-up: wallpaper $WALL is not a readable PNG or JPEG; using the plain background" >&2; solid_bg '#0B0D11'; fi ;;
   *) echo "desktop-up: --wallpaper must be cathedral, neutral, #RRGGBB or a file path; using the plain background" >&2; solid_bg '#0B0D11' ;;
 esac
-if [ "$SERVER" = x11vnc ]; then
-if [ "$VNC_AUTH" = none ]; then
-  VNC_ARGS="-nopw"
-else
-  x11vnc -storepasswd "$PW" /run/desktop/vncpass >/dev/null 2>&1
-  VNC_ARGS="-rfbauth /run/desktop/vncpass"
-fi
-# AB#802: 5 ms (default 20) before sending an update and between screen checks, so a change goes out
-# sooner on each frame the viewer requests. -noxdamage stays: under picom, X DAMAGE hints gained nothing
-# in a local test and the one live run with picom on opened menus slower with them.
-running -x x11vnc || setsid x11vnc -display :1 $VNC_ARGS -rfbport 5901 -localhost -forever -shared -noxdamage -defer 5 -wait 5 -quiet >/run/desktop/x11vnc.log 2>&1 < /dev/null &
-WEB=/usr/share/novnc; [ -f /opt/desktop/web/index.html ] && WEB=/opt/desktop/web
-running -f websockify || setsid websockify --web "$WEB" 6080 localhost:5901 >/run/desktop/websockify.log 2>&1 < /dev/null &
-else
+if [ "$SERVER" = kasm ]; then
   WEB=/usr/share/kasmvnc/www
+else
+  if [ "$SERVER" = x11vnc ]; then
+    if [ "$VNC_AUTH" = none ]; then
+      VNC_ARGS="-nopw"
+    else
+      x11vnc -storepasswd "$PW" /run/desktop/vncpass >/dev/null 2>&1
+      VNC_ARGS="-rfbauth /run/desktop/vncpass"
+    fi
+    # AB#802: 5 ms (default 20) before sending an update and between screen checks, so a change goes out
+    # sooner on each frame the viewer requests. -noxdamage stays: under picom, X DAMAGE hints gained nothing
+    # in a local test and the one live run with picom on opened menus slower with them.
+    running -x x11vnc || setsid x11vnc -display :1 $VNC_ARGS -rfbport 5901 -localhost -forever -shared -noxdamage -defer 5 -wait 5 -quiet >/run/desktop/x11vnc.log 2>&1 < /dev/null &
+  fi
+  # x11vnc and TigerVNC both speak RFB on 5901, so the same page and the same websockify serve either.
+  WEB=/usr/share/novnc; [ -f /opt/desktop/web/index.html ] && WEB=/opt/desktop/web
+  running -f websockify || setsid websockify --web "$WEB" 6080 localhost:5901 >/run/desktop/websockify.log 2>&1 < /dev/null &
 fi
 BASE=""
 if [ "$TUNNEL" = 1 ]; then

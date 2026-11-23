@@ -6,14 +6,14 @@ export DEBIAN_FRONTEND=noninteractive
 HERE="$(cd "$(dirname "$0")" && pwd)"
 t0=$(date +%s)
 need=0
-for c in Xvfb chromium cloudflared picom xfce4-terminal x11vnc websockify; do command -v "$c" >/dev/null || need=1; done
+for c in Xvfb Xtigervnc chromium cloudflared picom xfce4-terminal x11vnc websockify; do command -v "$c" >/dev/null || need=1; done
 if [ "$need" = 1 ]; then
   APT="apt-get -qq -o DPkg::Lock::Timeout=300"
   $APT update
   $APT install -y --no-install-recommends \
     ca-certificates curl procps psmisc dbus-x11 \
     xvfb x11-xserver-utils x11-utils x11-apps xdotool scrot imagemagick \
-    x11vnc novnc python3-websockify \
+    x11vnc novnc python3-websockify tigervnc-standalone-server \
     openbox tint2 feh picom xfce4-terminal \
     chromium fonts-dejavu fonts-noto-color-emoji fonts-inter fonts-jetbrains-mono \
     papirus-icon-theme adwaita-icon-theme gnome-themes-extra >/dev/null
