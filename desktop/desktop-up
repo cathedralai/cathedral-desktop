@@ -39,12 +39,6 @@ if [ "$SERVER" = kasm ] && ! command -v Xkasmvnc >/dev/null; then
 fi
 export DISPLAY=:1 XDG_CONFIG_HOME=/root/.config
 mkdir -p /work /run/desktop /root/.config/openbox /root/.config/gtk-3.0 /root/.config/xfce4/terminal
-echo starting > /run/desktop/state
-# Wallpaper choice: the flag or DESKTOP_WALLPAPER wins and is saved; otherwise the saved one; else cathedral.
-if [ -n "$WALL" ]; then printf '%s\n' "$WALL" > /work/desktop-wallpaper
-elif [ -s /work/desktop-wallpaper ]; then WALL="$(head -n 1 /work/desktop-wallpaper)"
-else WALL=neutral; fi
-MENU_LABEL=Cathedral; [ "$WALL" = cathedral ] || MENU_LABEL=Desktop
 # pgrep also lists zombies, and in a sealed room pid 1 is `sleep infinity`, which never
 # reaps them: a killed openbox stays listed forever (seen live 10 Nov, state Z, ppid 1).
 # So count a process as running only when it exists and is not a zombie. Every start
@@ -56,10 +50,24 @@ running() {
   done
   return 1
 }
+# The display server cannot be swapped under a running desktop: Xvfb or Xkasmvnc IS display :1, and every
+# open app lives on it. Asking for the other one used to skip the start quietly and report "ready" with
+# the old viewer still up (and --restart then left no viewer at all). Refuse instead, and change nothing.
+other=Xvfb; [ "$SERVER" = x11vnc ] && other=Xkasmvnc
+if running -x "$other"; then
+  echo "desktop-up: this desktop already runs on $other; --server $SERVER needs a fresh room (the display cannot be switched while apps are open)" >&2
+  exit 2
+fi
 # A process that is still exiting must not count as running either, so --restart waits.
 desktop_procs_alive() {
   running -x openbox || running -x tint2 || running -x picom || running -x x11vnc || running -f websockify
 }
+echo starting > /run/desktop/state
+# Wallpaper choice: the flag or DESKTOP_WALLPAPER wins and is saved; otherwise the saved one; else neutral.
+if [ -n "$WALL" ]; then printf '%s\n' "$WALL" > /work/desktop-wallpaper
+elif [ -s /work/desktop-wallpaper ]; then WALL="$(head -n 1 /work/desktop-wallpaper)"
+else WALL=neutral; fi
+MENU_LABEL=Cathedral; [ "$WALL" = cathedral ] || MENU_LABEL=Desktop
 if [ "$RESTART" = 1 ]; then
   pkill -x openbox; pkill -x tint2; pkill -x picom; pkill -x x11vnc; pkill -f websockify
   for _ in $(seq 1 50); do desktop_procs_alive || break; sleep 0.1; done
