@@ -1,0 +1,27 @@
+#!/bin/bash
+# One agent step in one call: do the input, let the screen settle, return the screenshot.
+# Today an agent pays two round trips per step (one exec for xdotool, one for shot). This is one.
+# Usage: step [--settle MS] [--jpeg [Q]] [--scale PCT] [--region X,Y,W,H] -- <xdotool arguments>
+#        step [flags]        no input, just the screenshot
+# Prints the screenshot base64 on stdout, as shot --b64 does. The screenshot flags are shot's.
+# Exit 2 for a bad flag, 3 when the input failed (nothing is printed, so a caller never reads a
+# screenshot as proof of an action that did not happen).
+export DISPLAY=:1
+settle=150; shotargs=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --settle) settle="${2:-}"; shift ;;
+    --jpeg) shotargs+=(--jpeg); case "${2:-}" in ''|--*) ;; *) shotargs+=("$2"); shift ;; esac ;;
+    --scale|--region) shotargs+=("$1" "${2:-}"); shift ;;
+    --) shift; break ;;
+    *) echo "step: unknown argument $1 (xdotool arguments go after --)" >&2; exit 2 ;;
+  esac
+  shift
+done
+case "$settle" in ''|*[!0-9]*) echo "step: --settle must be milliseconds, 0 to 10000" >&2; exit 2 ;; esac
+[ "$settle" -le 10000 ] || { echo "step: --settle must be milliseconds, 0 to 10000" >&2; exit 2; }
+if [ $# -gt 0 ]; then
+  xdotool "$@" >/dev/null || { echo "step: the input failed" >&2; exit 3; }
+  sleep "$(printf '%d.%03d' $((settle / 1000)) $((settle % 1000)))"
+fi
+exec shot --b64 "${shotargs[@]}"

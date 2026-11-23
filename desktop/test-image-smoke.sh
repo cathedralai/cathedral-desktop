@@ -55,6 +55,17 @@ x shot --b64 2>/dev/null | tr -d '\n' | base64 -d > /tmp/smoke-shot2.png 2>/dev/
 [ "$(head -c 8 /tmp/smoke-shot2.png | od -An -tx1 | tr -d ' \n')" = 89504e470d0a1a0a ] && ok "plain shot --b64 is still a full PNG" || bad "plain shot --b64 changed"
 med() { x bash -c 'for i in $(seq 15); do s=$(date +%s%N); "$@" >/dev/null 2>&1; e=$(date +%s%N); echo $(( (e-s)/1000000 )); done | sort -n | sed -n 8p' _ "$@"; }
 echo "info median of 15, in the room, $SERVER under $RUNTIME: shot png $(med shot) ms ($png B); shot --jpeg $(med shot --jpeg) ms ($jpg B); shot --jpeg 60 --scale 50 $(med shot --jpeg 60 --scale 50) ms ($half B); one xdotool click $(med env DISPLAY=:1 xdotool mousemove 200 300 click 1) ms"
+# step: the input and the screenshot in one call.
+x step --settle 50 --jpeg 60 --scale 50 -- mousemove 321 222 2>/dev/null | tr -d '\n' | base64 -d > /tmp/smoke-step.jpg 2>/dev/null
+sm="$(head -c 2 /tmp/smoke-step.jpg | od -An -tx1 | tr -d ' \n')"; ss=$(stat -c %s /tmp/smoke-step.jpg 2>/dev/null || echo 0)
+loc="$(x env DISPLAY=:1 xdotool getmouselocation 2>/dev/null)"
+case "$loc" in *"x:321 y:222"*) lok=1 ;; *) lok=0 ;; esac
+if [ "$sm" = ffd8 ] && [ "$ss" -gt 1000 ] && [ "$lok" = 1 ]; then ok "step did the input and returned a JPEG ($ss bytes) in one call"; else bad "step: magic=$sm size=$ss pointer=$loc"; fi
+out="$(x step -- no-such-xdotool-command 2>/dev/null)"; rc=$?
+if [ "$rc" = 3 ] && [ -z "$out" ]; then ok "step prints no screenshot when the input fails (exit 3)"; else bad "step with a bad input: exit $rc, ${#out} bytes printed"; fi
+x step --settle abc >/dev/null 2>&1; [ $? = 2 ] && ok "step refuses a bad --settle" || bad "step accepted a bad --settle"
+two() { x bash -c 'for i in $(seq 15); do s=$(date +%s%N); env DISPLAY=:1 xdotool mousemove 200 300 click 1 >/dev/null 2>&1; shot --jpeg 60 --scale 50 >/dev/null 2>&1; e=$(date +%s%N); echo $(( (e-s)/1000000 )); done | sort -n | sed -n 8p'; }
+echo "info median of 15, in the room, $SERVER under $RUNTIME: click then screenshot as two commands $(two) ms; step --settle 0 (one command) $(med step --settle 0 --jpeg 60 --scale 50 -- mousemove 200 300 click 1) ms. Through the API each command is also one exec round trip, which this does not measure"
 # A second call must be a no-op, as the API's start exec may run twice.
 x desktop-up --server "$SERVER" --room smoke >/dev/null 2>&1 && ok "second desktop-up is harmless" || bad "second desktop-up failed"
 x env DISPLAY=:1 xdpyinfo >/dev/null 2>&1 && ok "display survives the second call" || bad "display gone after the second call"

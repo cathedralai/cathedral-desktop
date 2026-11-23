@@ -45,7 +45,7 @@ if [ -n "${KASMVNC_VERSION:-}" ] && ! command -v Xkasmvnc >/dev/null; then
   : > /tmp/kasmvnc.deb
 fi
 mkdir -p /opt/desktop/web /work /usr/share/themes/Cathedral/openbox-3
-install -m 755 "$HERE/desktop-up" "$HERE/shot" "$HERE/browser" /usr/local/bin/
+install -m 755 "$HERE/desktop-up" "$HERE/shot" "$HERE/step" "$HERE/browser" /usr/local/bin/
 install -m 644 "$HERE/theme/openbox-themerc" /usr/share/themes/Cathedral/openbox-3/themerc
 install -m 644 "$HERE/theme/tint2rc" "$HERE/theme/picom.conf" "$HERE/theme/terminalrc" "$HERE/theme/gtk-settings.ini" /opt/desktop/
 install -m 755 "$HERE/theme/apply-openbox.py" "$HERE/theme/wallpaper.sh" /opt/desktop/

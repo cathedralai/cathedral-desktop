@@ -119,6 +119,7 @@ What this does and does not show (details in `tee/build/README.md`):
 | Path | Role |
 |---|---|
 | `desktop/bootstrap` | apt install of the desktop stack inside a stock room, idempotent, about 60 s |
+| `desktop/shot`, `desktop/step` | `shot`: screenshot, PNG by default, `--jpeg [Q]`, `--scale PCT`, `--region X,Y,W,H` for smaller ones; `step ... -- <xdotool args>`: the input and the screenshot in one exec |
 | `desktop/desktop-up` | starts Xvfb, openbox, picom, tint2, x11vnc, the branded page, optional tunnel; `--restart` reloads the look |
 | `desktop/theme/` | openbox theme, tint2 panel, picom, terminal colours, GTK dark, wallpaper renderer, launcher entries |
 | `desktop/web/index.html` | the branded noVNC page: status chip, room id, password from the URL fragment |
