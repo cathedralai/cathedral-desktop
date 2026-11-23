@@ -70,7 +70,17 @@ class Launched:
                                      start_new_session=True)
         self.lines: queue.Queue[str | None] = queue.Queue()
         self.console: list[str] = []
-        threading.Thread(target=self._pump, daemon=True).start()
+        # The reader thread must never be the one a SIGTERM or SIGHUP lands on. A process signal may go
+        # to any thread that does not block it; on the reader it only sets Python's flag, the main
+        # thread stays in its blocking call, and _exit_on_signals' cleanup waits for that call to
+        # return (seen under gVisor: about 1 signal in 800 left the runner asleep). A thread inherits
+        # the mask of the thread that starts it, so block the two around the start.
+        guarded = {signal.SIGTERM, signal.SIGHUP}
+        old = signal.pthread_sigmask(signal.SIG_BLOCK, guarded)
+        try:
+            threading.Thread(target=self._pump, daemon=True).start()
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, old)
 
     def _pump(self):
         for line in self.proc.stdout:
