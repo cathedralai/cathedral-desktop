@@ -157,14 +157,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The same pinned gVisor release the sealed rooms run (cathedral-sandbox Dockerfile.tee-box-runsc):
+      # one tarball, runsc plus the gvisor-bin/ sidecars it resolves next to itself.
       - name: Install gVisor
         if: matrix.runtime == 'runsc'
+        env:
+          GVISOR_RELEASE: '20261005.0'
+          GVISOR_TARBALL_SHA512: 79869ae9a589355a46d46fdac068d9a954e741741ffe77c64e38c56ea955498c1cb04e9bce44e1cce5155333e6b76bee72347c6661bb7c78fd2fe3aad198c8fe
         run: |
           set -euo pipefail
-          base="https://storage.googleapis.com/gvisor/releases/release/latest/x86_64"
-          curl -fsSL -O "$base/runsc" -O "$base/runsc.sha512"
-          sha512sum -c runsc.sha512
-          sudo install -m 755 runsc /usr/local/bin/runsc
+          curl -fsSL -o /tmp/gvisor.tar.bz2 "https://storage.googleapis.com/gvisor/releases/release/${GVISOR_RELEASE}/x86_64/gvisor.tar.bz2"
+          echo "${GVISOR_TARBALL_SHA512}  /tmp/gvisor.tar.bz2" | sha512sum -c -
+          mkdir /tmp/gvisor && tar -xjf /tmp/gvisor.tar.bz2 -C /tmp/gvisor
+          sudo cp -a /tmp/gvisor/runsc /tmp/gvisor/gvisor-bin /usr/local/bin/
+          sudo chmod 755 /usr/local/bin/runsc
           sudo /usr/local/bin/runsc install
           sudo systemctl restart docker
           docker info --format '{{json .Runtimes}}'
