@@ -36,24 +36,39 @@ if [ "$SERVER" = kasm ]; then
 else
   c="$(code http://127.0.0.1:6080/)"; [ "$c" = 200 ] && ok "web port serves the viewer page (200)" || bad "web port answered $c, want 200"
 fi
-# Wallpaper choice (--wallpaper): pixel 20,700 is bare desktop (the panel is at the top, no window is open).
-px() { x shot >/dev/null 2>&1; x magick /work/screen.png -format '%[hex:u.p{20,700}]' info: 2>/dev/null | cut -c1-6 | tr a-f A-F; }
-x desktop-up --server "$SERVER" --room smoke --wallpaper neutral >/dev/null 2>&1
-p="$(px)"; [ "$p" = 0B0D11 ] && ok "neutral wallpaper is the plain dark base" || bad "neutral wallpaper pixel is $p, want 0B0D11"
+# Wallpaper choice (--wallpaper). bg prints "<unique colours> <colour>" for a 900x450 region of bare desktop
+# (below the panel, away from the pointer). A solid background is exactly "1 RRGGBB". The first check is
+# the control: the branded wallpaper must read as many colours there, or the probe proves nothing. (The
+# first version of this test read one pixel that is the same dark colour in the branded picture, so it
+# passed "neutral" while the branded picture was still up.)
+bg() {
+  x shot >/dev/null 2>&1
+  x sh -c "magick /work/screen.png -crop 900x450+340+320 +repage -unique-colors -format '%w ' info:; magick /work/screen.png -format '%[hex:u.p{400,400}]' info:" 2>/dev/null \
+    | tr a-f A-F | awk '{print $1, substr($2,1,6)}'
+}
+wp() { x desktop-up --server "$SERVER" --room smoke "$@" >/dev/null 2>&1; }
+b="$(bg)"; n="${b%% *}"
+if [ "${n:-0}" -gt 50 ] 2>/dev/null; then ok "control: the branded wallpaper reads as $n colours"; else bad "control: the branded wallpaper reads as '$b', want many colours"; fi
+wp --wallpaper neutral
+b="$(bg)"; [ "$b" = "1 0B0D11" ] && ok "neutral wallpaper is one plain dark colour" || bad "neutral wallpaper reads '$b', want '1 0B0D11'"
 [ "$(x cat /work/desktop-wallpaper 2>/dev/null)" = neutral ] && ok "wallpaper choice is saved" || bad "wallpaper choice not saved"
 x grep -q 'label="Desktop"' /root/.config/openbox/menu.xml && ok "menu title is Desktop when not branded" || bad "menu title still branded"
-x desktop-up --server "$SERVER" --room smoke --wallpaper '#224466' >/dev/null 2>&1
-p="$(px)"; [ "$p" = 224466 ] && ok "colour wallpaper applied" || bad "colour wallpaper pixel is $p, want 224466"
+wp --wallpaper '#224466'
+b="$(bg)"; [ "$b" = "1 224466" ] && ok "colour wallpaper applied" || bad "colour wallpaper reads '$b', want '1 224466'"
 x magick -size 320x200 xc:'#AA3311' /work/own.png >/dev/null 2>&1
-x desktop-up --server "$SERVER" --room smoke --wallpaper /work/own.png >/dev/null 2>&1
-p="$(px)"; [ "$p" = AA3311 ] && ok "customer picture applied" || bad "customer picture pixel is $p, want AA3311"
-x desktop-up --server "$SERVER" --room smoke >/dev/null 2>&1
-p="$(px)"; [ "$p" = AA3311 ] && ok "saved wallpaper survives a plain desktop-up" || bad "saved wallpaper lost: pixel $p"
+wp --wallpaper /work/own.png
+b="$(bg)"; [ "$b" = "1 AA3311" ] && ok "customer picture applied" || bad "customer picture reads '$b', want '1 AA3311'"
+wp
+b="$(bg)"; [ "$b" = "1 AA3311" ] && ok "saved wallpaper survives a plain desktop-up" || bad "saved wallpaper lost: reads '$b'"
 x sh -c 'echo not-a-picture > /work/bad.png'
-x desktop-up --server "$SERVER" --room smoke --wallpaper /work/bad.png >/dev/null 2>&1
-p="$(px)"; [ "$p" = 0B0D11 ] && ok "an unreadable picture falls back to the plain base" || bad "unreadable picture left pixel $p, want 0B0D11"
-x desktop-up --server "$SERVER" --room smoke --wallpaper cathedral >/dev/null 2>&1
+wp --wallpaper /work/bad.png
+b="$(bg)"; [ "$b" = "1 0B0D11" ] && ok "an unreadable picture falls back to the plain base" || bad "unreadable picture reads '$b', want '1 0B0D11'"
+wp --wallpaper sideways
+b="$(bg)"; [ "$b" = "1 0B0D11" ] && ok "an unknown value falls back to the plain base" || bad "unknown value reads '$b', want '1 0B0D11'"
+wp --wallpaper cathedral
 x grep -q 'label="Cathedral"' /root/.config/openbox/menu.xml && ok "cathedral wallpaper restores the branded menu title" || bad "menu title not restored"
+b="$(bg)"; n="${b%% *}"
+if [ "${n:-0}" -gt 50 ] 2>/dev/null; then ok "cathedral wallpaper is back ($n colours)"; else bad "cathedral wallpaper not back: reads '$b'"; fi
 # A second call must be a no-op, as the API's start exec may run twice.
 x desktop-up --server "$SERVER" --room smoke >/dev/null 2>&1 && ok "second desktop-up is harmless" || bad "second desktop-up failed"
 x env DISPLAY=:1 xdpyinfo >/dev/null 2>&1 && ok "display survives the second call" || bad "display gone after the second call"

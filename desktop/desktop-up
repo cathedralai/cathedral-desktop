@@ -128,15 +128,22 @@ if [ ! -s /opt/desktop/wallpaper.png ] || [ "$RESTART" = 1 ]; then
   [ -x /opt/desktop/wallpaper.sh ] && /opt/desktop/wallpaper.sh /opt/desktop/wallpaper.png "$RES" >/dev/null 2>&1
 fi
 xsetroot -solid '#0B0D11'
+# Under picom the visible background is the root pixmap feh sets. xsetroot alone changes nothing once a
+# picture is there (seen in CI on this change: a colour and the fallback both left the old picture up).
+# So every choice goes through feh, with a small solid PNG for the plain base and for a colour.
+solid_bg() {
+  magick -size 32x32 "xc:$1" /run/desktop/solid.png >/dev/null 2>&1 \
+    && feh --no-fehbg --bg-fill /run/desktop/solid.png >/dev/null 2>&1
+}
 case "$WALL" in
   cathedral) feh --no-fehbg --bg-fill /opt/desktop/wallpaper.png >/dev/null 2>&1 || true ;;
-  neutral) ;;  # the plain dark base set above, no words
-  '#'[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) xsetroot -solid "$WALL" ;;
+  neutral) solid_bg '#0B0D11' ;;  # plain dark, no words
+  '#'[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) solid_bg "$WALL" ;;
   /*)
-    # A customer's own picture. A file feh cannot read leaves the plain dark base, never the branded one.
+    # A customer's own picture. A file feh cannot read gives the plain dark base, never the branded one.
     if [ -f "$WALL" ] && feh --no-fehbg --bg-fill "$WALL" >/dev/null 2>&1; then :
-    else echo "desktop-up: wallpaper $WALL is not a readable PNG or JPEG; using the plain background" >&2; fi ;;
-  *) echo "desktop-up: --wallpaper must be cathedral, neutral, #RRGGBB or a file path; using the plain background" >&2 ;;
+    else echo "desktop-up: wallpaper $WALL is not a readable PNG or JPEG; using the plain background" >&2; solid_bg '#0B0D11'; fi ;;
+  *) echo "desktop-up: --wallpaper must be cathedral, neutral, #RRGGBB or a file path; using the plain background" >&2; solid_bg '#0B0D11' ;;
 esac
 if [ "$SERVER" = x11vnc ]; then
 if [ "$VNC_AUTH" = none ]; then
