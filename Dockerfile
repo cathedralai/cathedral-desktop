@@ -17,6 +17,9 @@ LABEL org.opencontainers.image.source="https://github.com/cathedralai/cathedral-
 # bootstrap reads these to fetch and check one cloudflared release instead of the latest.
 ARG CLOUDFLARED_VERSION=2026.10.7
 ARG CLOUDFLARED_SHA256=70b1a1e0f46033ffc8d90b406e554044ba6cbf2e4360295ef1163aed31e09393
+# KasmVNC for `desktop-up --server kasm` (opt in). amd64 trixie package, checksum taken 2026-11-22.
+ARG KASMVNC_VERSION=1.5.2
+ARG KASMVNC_SHA256=6ed957163275088a5ce52b525f82f145014e3289699d576ce26745a4249407f8
 
 # Run the same bootstrap a stock room runs, so the image cannot drift from it. Then render the default
 # 1280x800 wallpaper (desktop-up would render it on first start) and drop the build-only files.
