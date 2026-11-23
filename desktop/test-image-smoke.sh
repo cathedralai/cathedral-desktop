@@ -66,6 +66,15 @@ if [ "$rc" = 3 ] && [ -z "$out" ]; then ok "step prints no screenshot when the i
 x step --settle abc >/dev/null 2>&1; [ $? = 2 ] && ok "step refuses a bad --settle" || bad "step accepted a bad --settle"
 two() { x bash -c 'for i in $(seq 15); do s=$(date +%s%N); env DISPLAY=:1 xdotool mousemove 200 300 click 1 >/dev/null 2>&1; shot --jpeg 60 --scale 50 >/dev/null 2>&1; e=$(date +%s%N); echo $(( (e-s)/1000000 )); done | sort -n | sed -n 8p'; }
 echo "info median of 15, in the room, $SERVER under $RUNTIME: click then screenshot as two commands $(two) ms; step --settle 0 (one command) $(med step --settle 0 --jpeg 60 --scale 50 -- mousemove 200 300 click 1) ms. Through the API each command is also one exec round trip, which this does not measure"
+# Asking for the other display server on a running desktop must refuse and leave everything as it was.
+oth=kasm; [ "$SERVER" = kasm ] && oth=x11vnc
+x desktop-up --server "$oth" --room smoke >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] && ok "switching to --server $oth on a running desktop is refused" || bad "switching to --server $oth exited $rc, want 2"
+x desktop-up --server "$oth" --restart --room smoke >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] && ok "the same with --restart is refused" || bad "switching with --restart exited $rc, want 2"
+[ "$(x cat /run/desktop/state 2>/dev/null)" = ready ] && ok "state is still ready after the refusals" || bad "state changed after a refused switch"
+if [ "$SERVER" = kasm ]; then c="$(code -u "cathedral:$pw" http://127.0.0.1:6080/)"; else c="$(code http://127.0.0.1:6080/)"; fi
+[ "$c" = 200 ] && ok "the viewer still answers after the refusals" || bad "the viewer answered $c after a refused switch"
 # A second call must be a no-op, as the API's start exec may run twice.
 x desktop-up --server "$SERVER" --room smoke >/dev/null 2>&1 && ok "second desktop-up is harmless" || bad "second desktop-up failed"
 x env DISPLAY=:1 xdpyinfo >/dev/null 2>&1 && ok "display survives the second call" || bad "display gone after the second call"
