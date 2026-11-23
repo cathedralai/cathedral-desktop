@@ -1,0 +1,60 @@
+# Experiment, not a check: does a noexec host directory, bind mounted into a gVisor room, break native
+# code run from it? Seen in a sealed room on 23 Nov 2026: static binaries on /workspace die with SIGSEGV.
+# Runs only on pushes to this experiment branch.
+name: exp-workspace-noexec
+on:
+  push:
+    branches: [exp/workspace-noexec-gvisor]
+permissions:
+  contents: read
+jobs:
+  experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install the pinned gVisor release the rooms run
+        env:
+          GVISOR_RELEASE: '20261005.0'
+          GVISOR_TARBALL_SHA512: 79869ae9a589355a46d46fdac068d9a954e741741ffe77c64e38c56ea955498c1cb04e9bce44e1cce5155333e6b76bee72347c6661bb7c78fd2fe3aad198c8fe
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/gvisor.tar.bz2 "https://storage.googleapis.com/gvisor/releases/release/${GVISOR_RELEASE}/x86_64/gvisor.tar.bz2"
+          echo "${GVISOR_TARBALL_SHA512}  /tmp/gvisor.tar.bz2" | sha512sum -c -
+          mkdir /tmp/gvisor && tar -xjf /tmp/gvisor.tar.bz2 -C /tmp/gvisor
+          sudo cp -a /tmp/gvisor/runsc /tmp/gvisor/gvisor-bin /usr/local/bin/
+          sudo chmod 755 /usr/local/bin/runsc
+          sudo /usr/local/bin/runsc install
+          sudo /usr/local/bin/runsc install --runtime runsc-excl -- --file-access-mounts=exclusive
+          sudo systemctl restart docker
+          docker info --format '{{json .Runtimes}}'
+      - name: Two host directories, one noexec, with the same files
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /mnt/ws-noexec /mnt/ws-exec
+          sudo mount -t tmpfs -o nosuid,nodev,noexec,size=64m tmpfs /mnt/ws-noexec
+          sudo mount -t tmpfs -o nosuid,nodev,size=64m tmpfs /mnt/ws-exec
+          curl -fsSL -o /tmp/bb https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
+          docker pull -q debian:trixie-slim
+          cid=$(docker create debian:trixie-slim); docker cp -L "$cid":/usr/bin/ls /tmp/ls-dyn; docker rm "$cid" >/dev/null
+          for d in /mnt/ws-noexec /mnt/ws-exec; do
+            sudo cp /tmp/bb "$d/static-busybox"; sudo cp /tmp/ls-dyn "$d/dynamic-ls"; sudo chmod 755 "$d"/*; sudo chmod 777 "$d"
+          done
+          findmnt -no OPTIONS /mnt/ws-noexec; findmnt -no OPTIONS /mnt/ws-exec
+      - name: Run the matrix
+        run: |
+          run() { # runtime hostdir label
+            for bin in static-busybox dynamic-ls; do
+              if [ "$bin" = static-busybox ]; then cmd="/workspace/static-busybox true"; else cmd="/workspace/dynamic-ls /workspace"; fi
+              out=$(docker run --rm --runtime "$1" -v "$2":/workspace debian:trixie-slim sh -c "$cmd >/dev/null 2>/tmp/err; rc=\$?; echo rc=\$rc \$(head -c 120 /tmp/err)" 2>&1 | tail -1)
+              printf 'RESULT | %-10s | %-14s | %-14s | %s\n' "$1" "$3" "$bin" "$out"
+            done
+            mo=$(docker run --rm --runtime "$1" -v "$2":/workspace debian:trixie-slim sh -c "grep ' /workspace ' /proc/mounts | cut -c1-150" 2>&1 | tail -1)
+            printf 'MOUNT  | %-10s | %-14s | %s\n' "$1" "$3" "$mo"
+          }
+          echo "RESULT | runtime    | host directory | binary         | outcome (rc=139 is SIGSEGV, 126 is permission denied)"
+          run runc       /mnt/ws-noexec noexec
+          run runc       /mnt/ws-exec   exec-allowed
+          run runsc      /mnt/ws-noexec noexec
+          run runsc      /mnt/ws-exec   exec-allowed
+          run runsc-excl /mnt/ws-noexec noexec
+          run runsc-excl /mnt/ws-exec   exec-allowed
