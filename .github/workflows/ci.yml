@@ -171,6 +171,10 @@ jobs:
       - name: Build the desktop image
         run: docker build -t cathedral-desktop:ci .
       - name: Image size
-        run: docker image inspect cathedral-desktop:ci --format '{{.Size}}' | awk '{printf "image size: %.0f MiB\n", $1/1048576}'
-      - name: Smoke test (${{ matrix.server }} under ${{ matrix.runtime }})
-        run: bash desktop/test-image-smoke.sh cathedral-desktop:ci "${{ matrix.server }}" "${{ matrix.runtime }}"
+        run: |
+          docker image inspect cathedral-desktop:ci --format '{{.Size}}' | awk '{printf "image size %.0f MiB\n", $1/1048576}'
+      - name: Smoke test
+        env:
+          SERVER: ${{ matrix.server }}
+          RUNTIME: ${{ matrix.runtime }}
+        run: bash desktop/test-image-smoke.sh cathedral-desktop:ci "$SERVER" "$RUNTIME"
