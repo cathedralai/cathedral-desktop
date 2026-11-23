@@ -62,6 +62,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install "cryptography==${CRYPTOGRAPHY_VERSION}"
+      - name: Desktop image startup lifecycle
+        run: |
+          bash -n desktop/desktop-up desktop/bootstrap
+          python desktop/test_startup.py
       - name: Browser verifier
         run: node tee/web/test-snp-verify.mjs
       - name: Combined runner acceptance and cleanup

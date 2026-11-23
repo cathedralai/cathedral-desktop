@@ -2,9 +2,9 @@
 # room boots with nothing to install. CI builds and pushes it (.github/workflows/publish-image.yml);
 # use it with `ctdesk new --image ghcr.io/cathedralai/cathedral-desktop@sha256:...`.
 #
-# Run it the way the sealed pool runs rooms: the pool starts the container with its own command and
-# sends every command by exec. Nothing here starts the desktop; exec `desktop-up`, as ctdesk does.
-# CMD only keeps a local `docker run -d` alive for the same exec flow.
+# Explicit start:image uses this supervised CMD. The existing sealed API/ctdesk path overrides
+# CMD with sleep infinity and still execs desktop-up, until its separate gated cutover.
+# The public quick tunnel carries display traffic through Cloudflare; its VNC password is per room.
 #
 # No VNC password is baked in: desktop-up generates one per room into /work/vnc-password at start.
 
@@ -26,4 +26,4 @@ RUN bash /tmp/desktop/bootstrap \
  && test ! -e /work/vnc-password \
  && find /var/lib/apt/lists /tmp -mindepth 1 -delete
 
-CMD ["sleep", "infinity"]
+CMD ["desktop-up", "--tunnel", "--foreground"]

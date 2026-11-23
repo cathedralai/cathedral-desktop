@@ -8,7 +8,7 @@
 #        --vnc-auth none  x11vnc with no password. Only where something else is the gate: in a TEE
 #                      box the sealed stream (attested, ticketed) is, and x11vnc is localhost only.
 #                      The default, password, is what the public tunnel path needs.
-#        --foreground  stay attached (daemons otherwise outlive the exec that started them)
+#        --foreground  exclusive image startup: check readiness and supervise the desktop
 # VNC password: $VNC_PASSWORD, else generated once into /work/vnc-password (0600).
 set -u
 TUNNEL=0; FG=0; RESTART=0; ROOM="${DESKTOP_ROOM:-}"; RES="${DESKTOP_RES:-1280x800}"; VNC_AUTH="${DESKTOP_VNC_AUTH:-password}"
@@ -23,9 +23,25 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+# Keep the legacy exec path detached. Foreground owns a fresh process tree.
+CHILDREN=()
+launch() {
+  setsid "$@" < /dev/null &
+  CHILDREN+=("$!")
+}
+foreground_cleanup() {
+  trap - EXIT
+  trap '' TERM INT
+  echo failed > /run/desktop/state
+  rm -f /work/desktop.json /work/desktop-url.txt
+  for pid in "${CHILDREN[@]}"; do kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; done
+  sleep 0.2
+  for pid in "${CHILDREN[@]}"; do kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; done
+  wait
+  exit 1
+}
 export DISPLAY=:1 XDG_CONFIG_HOME=/root/.config
 mkdir -p /work /run/desktop /root/.config/openbox /root/.config/gtk-3.0 /root/.config/xfce4/terminal
-echo starting > /run/desktop/state
 # pgrep also lists zombies, and in a sealed room pid 1 is `sleep infinity`, which never
 # reaps them: a killed openbox stays listed forever (seen live 10 Nov, state Z, ppid 1).
 # So count a process as running only when it exists and is not a zombie. Every start
@@ -37,6 +53,20 @@ running() {
   done
   return 1
 }
+if [ "$FG" = 1 ]; then
+  # Do not attach the image supervisor to a desktop owned by an earlier exec.
+  if running -x Xvfb || running -x openbox || running -x picom || running -x tint2 || running -x x11vnc || running -f websockify || running -x cloudflared; then
+    echo 'desktop-up: foreground requires a fresh desktop' >&2
+    exit 1
+  fi
+  if [ "$TUNNEL" = 1 ] && [ "$VNC_AUTH" != password ]; then
+    echo 'desktop-up: foreground tunnel requires password authentication' >&2
+    exit 1
+  fi
+  rm -f /work/desktop.json /work/desktop-url.txt
+  trap foreground_cleanup TERM INT EXIT
+fi
+echo starting > /run/desktop/state
 # A process that is still exiting must not count as running either, so --restart waits.
 desktop_procs_alive() {
   running -x openbox || running -x tint2 || running -x picom || running -x x11vnc || running -f websockify
@@ -67,16 +97,16 @@ MENU
 [ -f /opt/desktop/gtk-settings.ini ] && cp /opt/desktop/gtk-settings.ini /root/.config/gtk-3.0/settings.ini
 [ -f /opt/desktop/terminalrc ] && cp /opt/desktop/terminalrc /root/.config/xfce4/terminal/terminalrc
 if ! xdpyinfo >/dev/null 2>&1; then
-  setsid Xvfb :1 -screen 0 "${RES}x24" -nolisten tcp -ac +extension RANDR >/run/desktop/xvfb.log 2>&1 < /dev/null &
+  launch Xvfb :1 -screen 0 "${RES}x24" -nolisten tcp -ac +extension RANDR >/run/desktop/xvfb.log 2>&1
   for _ in $(seq 1 100); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
 fi
-if running -x openbox; then openbox --reconfigure; else setsid openbox >/run/desktop/openbox.log 2>&1 < /dev/null & sleep 0.6; fi
+if running -x openbox; then openbox --reconfigure; else launch openbox >/run/desktop/openbox.log 2>&1; sleep 0.6; fi
 if ! running -x picom && command -v picom >/dev/null; then
-  setsid picom --config /opt/desktop/picom.conf >/run/desktop/picom.log 2>&1 < /dev/null &
+  launch picom --config /opt/desktop/picom.conf >/run/desktop/picom.log 2>&1
 fi
 if ! running -x tint2; then
-  if [ -f /opt/desktop/tint2rc ]; then setsid tint2 -c /opt/desktop/tint2rc >/run/desktop/tint2.log 2>&1 < /dev/null &
-  else setsid tint2 >/run/desktop/tint2.log 2>&1 < /dev/null & fi
+  if [ -f /opt/desktop/tint2rc ]; then launch tint2 -c /opt/desktop/tint2rc >/run/desktop/tint2.log 2>&1
+  else launch tint2 >/run/desktop/tint2.log 2>&1; fi
 fi
 # Background after the window manager is up, otherwise openbox repaints over it.
 if [ ! -s /opt/desktop/wallpaper.png ] || [ "$RESTART" = 1 ]; then
@@ -102,9 +132,9 @@ fi
 # AB#802: 5 ms (default 20) before sending an update and between screen checks, so a change goes out
 # sooner on each frame the viewer requests. -noxdamage stays: under picom, X DAMAGE hints gained nothing
 # in a local test and the one live run with picom on opened menus slower with them.
-running -x x11vnc || setsid x11vnc -display :1 $VNC_ARGS -rfbport 5901 -localhost -forever -shared -noxdamage -defer 5 -wait 5 -quiet >/run/desktop/x11vnc.log 2>&1 < /dev/null &
+running -x x11vnc || launch x11vnc -display :1 $VNC_ARGS -rfbport 5901 -localhost -forever -shared -noxdamage -defer 5 -wait 5 -quiet >/run/desktop/x11vnc.log 2>&1
 WEB=/usr/share/novnc; [ -f /opt/desktop/web/index.html ] && WEB=/opt/desktop/web
-running -f websockify || setsid websockify --web "$WEB" 6080 localhost:5901 >/run/desktop/websockify.log 2>&1 < /dev/null &
+running -f websockify || launch websockify --web "$WEB" 6080 localhost:5901 >/run/desktop/websockify.log 2>&1
 BASE=""
 if [ "$TUNNEL" = 1 ]; then
   if running -x cloudflared && [ -s /run/desktop/cloudflared.log ]; then
@@ -112,7 +142,7 @@ if [ "$TUNNEL" = 1 ]; then
   fi
   if [ -z "$BASE" ]; then
     pkill -x cloudflared 2>/dev/null; : > /run/desktop/cloudflared.log
-    setsid cloudflared tunnel --no-autoupdate --url http://localhost:6080 >/run/desktop/cloudflared.log 2>&1 < /dev/null &
+    launch cloudflared tunnel --no-autoupdate --url http://localhost:6080 >/run/desktop/cloudflared.log 2>&1
     for _ in $(seq 1 150); do
       BASE="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /run/desktop/cloudflared.log | head -1)"
       [ -n "$BASE" ] && break
@@ -127,11 +157,22 @@ if [ -n "$BASE" ]; then
   if [ "$WEB" = /opt/desktop/web ]; then URL="${BASE}/#p=${PW}${ROOM:+&room=$ROOM}"
   else URL="${BASE}/vnc.html#autoconnect=1&resize=scale&password=${PW}"; fi
   printf '%s\n' "$URL" > /work/desktop-url.txt
-  printf '{"url":"%s","room":"%s","display":"%s","started_at":"%s"}\n' "$URL" "$ROOM" "$RES" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /work/desktop.json
+  # The room id comes from DESKTOP_ROOM for image startup; serialize it safely.
+  python3 - "$URL" "$ROOM" "$RES" <<'JSON' > /work/desktop.json
+import datetime, json, sys
+print(json.dumps(dict(url=sys.argv[1], room=sys.argv[2], display=sys.argv[3],
+                     started_at=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))))
+JSON
+fi
+if [ "$FG" = 1 ]; then
+  ARGS=()
+  for pid in "${CHILDREN[@]}"; do ARGS+=(--pid "$pid"); done
+  [ "$TUNNEL" = 1 ] && ARGS+=(--tunnel)
+  # exec preserves child ownership for waitpid and makes the supervisor PID 1.
+  exec /usr/local/bin/desktop-supervise "${ARGS[@]}"
 fi
 sleep 1
 echo ready > /run/desktop/state
 echo "desktop ready on :1 (${RES}); vnc 5901 localhost only, auth ${VNC_AUTH}; web 6080 ($WEB)"
 [ -n "$URL" ] && echo "public: $URL"
-[ "$FG" = 1 ] && wait
 exit 0
