@@ -18,7 +18,7 @@ magick -size "${size}" xc:'#0B0D11' \
      -draw "line 0,$(( h * 62 / 100 )) ${w},$(( h * 62 / 100 ))" -alpha set -channel A -evaluate multiply 0.06 +channel \) \
   -gravity northwest -geometry +0+0 -compose over -composite \
   -font "$bold" -pointsize $(( h / 11 )) -fill '#ECE9E1' -gravity northwest -annotate "+$(( w * 6 / 100 ))+$(( h * 66 / 100 ))" 'Cathedral' \
-  -font "$regular" -pointsize $(( h / 44 )) -fill '#8E9AA6' -annotate "+$(( w * 6 / 100 + 4 ))+$(( h * 66 / 100 + h / 11 + h / 40 ))" 'Sealed desktop.  Every click, key and screenshot is a signed receipt.' \
+  -font "$regular" -pointsize $(( h / 44 )) -fill '#8E9AA6' -annotate "+$(( w * 6 / 100 + 4 ))+$(( h * 66 / 100 + h / 11 + h / 40 ))" 'Sealed desktop.  Every exec an agent sends leaves a receipt.' \
   -font "$mono" -pointsize $(( h / 57 )) -fill '#F06E4A' -annotate "+$(( w * 6 / 100 + 4 ))+$(( h * 66 / 100 + h / 11 + h / 40 + h / 24 ))" 'AMD SEV-SNP  /  gVisor  /  cathedral.computer' \
   "$out"
 echo "wallpaper $out ($size)"

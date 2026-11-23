@@ -1,8 +1,8 @@
 # cathedral-desktop
 
 A Linux desktop inside a Cathedral sealed sandbox, driven by a computer-use agent through the
-public API. Every click, keystroke and screenshot is one `ctcli sandbox exec`, so Cathedral signs a
-receipt for each step. Tracked as ADO AB#573 under AB#56 (mission M-D).
+public API. Every click, keystroke and screenshot the agent sends is one `ctcli sandbox exec`, so each
+step leaves a receipt. What a person does by hand in the viewer goes over VNC, not exec, and leaves none. Tracked as ADO AB#573 under AB#56 (mission M-D).
 
 **Status: a spike and demo, not a Cathedral product.** On cathedral.computer the streamed desktop
 (computer-use) is still marked coming soon, and no sealed desktop evidence is published. The
