@@ -75,7 +75,13 @@ def shutdown(pids, grace=3):
             try:
                 os.killpg(pid, sig)
             except ProcessLookupError:
-                pass
+                # The shell can exec us before setsid establishes the group.
+                # Only a still-owned child may take this direct-pid fallback.
+                if alive(pid):
+                    try:
+                        os.kill(pid, sig)
+                    except ProcessLookupError:
+                        pass
         if sig == signal.SIGTERM:
             deadline = time.monotonic() + grace
             while time.monotonic() < deadline:

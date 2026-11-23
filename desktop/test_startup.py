@@ -126,8 +126,18 @@ class StartupTest(unittest.TestCase):
 
     def test_exited_child_is_not_live_even_when_a_zombie(self):
         process = self.child("pass")
-        time.sleep(0.1)
+        deadline = time.monotonic() + 5
+        while Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z":
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.005)
         self.assertFalse(supervisor.alive(process.pid))
+
+    def test_shutdown_also_stops_a_child_before_setsid(self):
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.processes.append(process)
+        supervisor.shutdown([process.pid], grace=0.05)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(process.pid, 0)
 
     def test_child_exit_after_ready_fails_and_stops_siblings(self):
         first, sibling = self.child(), self.child()
