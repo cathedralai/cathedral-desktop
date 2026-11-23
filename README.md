@@ -89,7 +89,7 @@ API and ctdesk create path overrides CMD with `sleep infinity` and keeps its exe
 Do not change the production image pin before the digest, eligible fleet and API startup mode agree.
 
 Run `python3 desktop/test_startup.py` for isolated readiness, child-exit and signal tests. They do not
-start a real desktop or establish a live sealed-room proof. CI builds an unpublished image and runs
+start a real desktop or test a live sealed sandbox. CI builds an unpublished image and runs
 `bash desktop/test-image.sh cathedral-desktop-ci` in disposable containers with networking disabled:
 local readiness, service failure, missing tunnel and the legacy exec path. The published digest and
 the gated service still need their live acceptance run.
