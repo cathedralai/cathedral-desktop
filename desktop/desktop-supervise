@@ -1,0 +1,158 @@
+#!/usr/bin/python3
+"""Own desktop-up's children after exec; publish local readiness, then watch exits."""
+import argparse
+import http.client
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import subprocess
+import time
+
+
+class Stopped(Exception):
+    pass
+
+
+def stop(_signum, _frame):
+    raise Stopped()
+
+
+def alive(pid):
+    # These must be our children, inherited from desktop-up by exec. Reap them
+    # rather than accepting kill(pid, 0), which also succeeds for zombies.
+    try:
+        return os.waitpid(pid, os.WNOHANG)[0] == 0
+    except ChildProcessError:
+        return False
+
+
+def local_ready(web_port=6080, vnc_port=5901):
+    conn = http.client.HTTPConnection("127.0.0.1", web_port, timeout=1)
+    try:
+        conn.request("GET", "/")
+        response = conn.getresponse()
+        if response.status != 200 or not response.read(1):
+            return False
+        with socket.create_connection(("127.0.0.1", vnc_port), timeout=1) as sock:
+            hello = b""
+            deadline = time.monotonic() + 1
+            while len(hello) < 12:
+                sock.settimeout(max(0.001, deadline - time.monotonic()))
+                if time.monotonic() >= deadline:
+                    return False
+                chunk = sock.recv(12 - len(hello))
+                if not chunk:
+                    return False
+                hello += chunk
+            return hello in (b"RFB 003.003\n", b"RFB 003.007\n", b"RFB 003.008\n")
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        conn.close()
+
+
+def has_link(work):
+    try:
+        data = json.loads((work / "desktop.json").read_text())
+        url = data["url"]
+        return isinstance(url, str) and bool(url) and (work / "desktop-url.txt").read_text().strip() == url
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def clear_link(work):
+    for name in ("desktop.json", "desktop-url.txt"):
+        (work / name).unlink(missing_ok=True)
+
+
+def shutdown(pids, grace=3):
+    # desktop-up uses setsid for each daemon, so descendants share this group.
+    # Stop the groups even when a leader exited before readiness.
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in pids:
+            try:
+                os.killpg(pid, sig)
+            except ProcessLookupError:
+                # The shell can exec us before setsid establishes the group.
+                # Only a still-owned child may take this direct-pid fallback.
+                if alive(pid):
+                    try:
+                        os.kill(pid, sig)
+                    except ProcessLookupError:
+                        pass
+        if sig == signal.SIGTERM:
+            deadline = time.monotonic() + grace
+            while time.monotonic() < deadline:
+                for pid in pids:
+                    alive(pid)
+                time.sleep(0.05)
+    for pid in pids:
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+
+
+def supervise(pids, work, state, tunnel, *, ready=local_ready, startup_timeout=10, interval=0.2):
+    try:
+        state.write_text("starting\n")
+        deadline = time.monotonic() + startup_timeout
+        while True:
+            if not pids or not all(alive(pid) for pid in pids):
+                raise RuntimeError("desktop process exited before readiness")
+            if tunnel and not has_link(work):
+                # desktop-up has already bounded the wait for a tunnel URL.
+                raise RuntimeError("desktop tunnel did not provide a link")
+            if ready():
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError("desktop local services did not become ready")
+            time.sleep(interval)
+        state.write_text("ready\n")
+        print("desktop local services ready", flush=True)
+        while True:
+            if not all(alive(pid) for pid in pids):
+                raise RuntimeError("desktop process exited")
+            time.sleep(interval)
+    except Stopped:
+        state.write_text("stopped\n")
+        return 0
+    except (OSError, RuntimeError) as exc:
+        state.write_text("failed\n")
+        print(f"desktop-start: {exc}", flush=True)
+        return 1
+    finally:
+        # A retained URL must never stand in for a running desktop after exit.
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, signal.SIG_IGN)
+        try:
+            clear_link(work)
+        finally:
+            shutdown(pids)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pid", type=int, action="append", required=True)
+    parser.add_argument("--tunnel", action="store_true")
+    args = parser.parse_args()
+    if any(pid <= 1 or pid == os.getpid() for pid in args.pid):
+        parser.error("invalid desktop child")
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, stop)
+
+    def ready():
+        try:
+            display = subprocess.run(["xdpyinfo"], stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return display.returncode == 0 and local_ready()
+
+    return supervise(args.pid, Path("/work"), Path("/run/desktop/state"), args.tunnel, ready=ready)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

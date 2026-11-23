@@ -73,6 +73,27 @@ nothing changes. ctcli's `--image` takes catalog names only, so ctdesk posts thi
 print seconds for the create and until the desktop is ready. The VNC password is still generated per room
 at start; the image has none.
 
+The next image built from this source declares `desktop-up --tunnel --foreground` as its CMD
+(AB#709). A local `docker run` therefore starts the desktop and a Cloudflare quick tunnel. Display
+traffic passes through Cloudflare; the per-room VNC password remains required. Foreground startup
+waits for the X display, a responding local web page and a VNC protocol greeting, and requires a
+fresh tunnel link before reporting ready. This is local readiness, not a check of public tunnel
+reachability. If a desktop process exits, startup fails, or the container is stopped, the supervisor
+clears the link files and terminates its process groups. It does not print the password-bearing URL.
+
+This source change does not enable image startup in the sealed service. Publication must produce a
+new immutable digest; the measured hotel allowlist must pair that digest with the exact CMD above.
+The API must opt eligible rooms into `start: "image"`, pass `DESKTOP_ROOM` for their room identity,
+and read readiness without starting a second desktop. Until that coordinated cutover, the existing
+API and ctdesk create path overrides CMD with `sleep infinity` and keeps its exec-based startup.
+Do not change the production image pin before the digest, eligible fleet and API startup mode agree.
+
+Run `python3 desktop/test_startup.py` for isolated readiness, child-exit and signal tests. They do not
+start a real desktop or test a live sealed sandbox. CI builds an unpublished image and runs
+`bash desktop/test-image.sh cathedral-desktop-ci` in disposable containers with networking disabled:
+local readiness, service failure, missing tunnel and the legacy exec path. The published digest and
+the gated service still need their live acceptance run.
+
 ## Rebuild and check the fingerprint
 
 The desktop TEE box (`tee/`) is an AMD SEV-SNP guest. Its launch fingerprint is the MEASUREMENT the
