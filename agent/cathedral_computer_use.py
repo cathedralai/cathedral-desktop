@@ -37,6 +37,10 @@ SYSTEM = (
 BUTTONS = {"left_click": 1, "middle_click": 2, "right_click": 3, "double_click": 1, "triple_click": 1}
 REPEATS = {"double_click": 2, "triple_click": 3}
 SCROLL_BUTTONS = {"up": 4, "down": 5, "left": 6, "right": 7}
+# Actions that are one xdotool call whose output nobody reads. With --one-call-steps the last one of a
+# turn runs through `step`, which returns the screenshot in the same exec. cursor_position reads
+# xdotool's output, hold_key and wait are not one xdotool call, so they stay as they are.
+FUSABLE = set(BUTTONS) | {"left_click_drag", "mouse_move", "left_mouse_down", "left_mouse_up", "scroll", "type", "key"}
 
 
 class Room:
@@ -45,6 +49,7 @@ class Room:
     def __init__(self, sandbox_id: str):
         self.id = sandbox_id
         self.receipts: list[dict] = []
+        self.settle_ms = 300
 
     def exec(self, argv: list, timeout: int = 40) -> str:
         cmd = ["ctcli", "sandbox", "exec", self.id, "--timeout", str(timeout), "--"] + [str(a) for a in argv]
@@ -64,14 +69,26 @@ class Room:
         """Base64 PNG of the whole display, in one receipted exec."""
         return self.exec(["shot", "--b64"]).strip()
 
+    def step(self, *args) -> str:
+        """One xdotool call, then the screen once it has settled: the input and the base64 PNG in one
+        receipted exec (the room's `step`). A failed input exits non-zero and prints no screenshot."""
+        return self.exec(["step", "--settle", str(self.settle_ms), "--", *args]).strip()
+
 
 def with_mods(mods: str | None, args: list) -> list:
     return ["keydown", mods, *args, "keyup", mods] if mods else args
 
 
-def do_action(room: Room, name: str, inp: dict) -> str:
-    """Run one toolset member. Returns 'image' when the caller must attach a screenshot, else text."""
+def do_action(room: Room, name: str, inp: dict, shot_out: list | None = None) -> str:
+    """Run one toolset member. Returns 'image' when the caller must attach a screenshot, else text.
+    With shot_out (a list) a FUSABLE action runs through room.step and its screenshot is appended there."""
     coord = inp.get("coordinate")
+
+    def run(*args) -> None:
+        if shot_out is not None and name in FUSABLE:
+            shot_out.append(room.step(*args))
+        else:
+            room.xdo(*args)
     if name == "screenshot":
         return "image"
     if name == "cursor_position":
@@ -82,31 +99,31 @@ def do_action(room: Room, name: str, inp: dict) -> str:
         args = ["mousemove", coord[0], coord[1]] if coord else []
         rep = REPEATS.get(name, 1)
         args += ["click"] + (["--repeat", rep, "--delay", 80] if rep > 1 else []) + [BUTTONS[name]]
-        room.xdo(*with_mods(inp.get("text"), args))
+        run(*with_mods(inp.get("text"), args))
         return "OK"
     if name == "left_click_drag":
         s, e = inp["start_coordinate"], inp["coordinate"]
-        room.xdo(*with_mods(inp.get("text"), ["mousemove", s[0], s[1], "mousedown", 1, "mousemove", "--sync", e[0], e[1], "mouseup", 1]))
+        run(*with_mods(inp.get("text"), ["mousemove", s[0], s[1], "mousedown", 1, "mousemove", "--sync", e[0], e[1], "mouseup", 1]))
         return "OK"
     if name == "mouse_move":
-        room.xdo("mousemove", coord[0], coord[1])
+        run("mousemove", coord[0], coord[1])
         return "OK"
     if name == "left_mouse_down":
-        room.xdo("mousedown", 1)
+        run("mousedown", 1)
         return "OK"
     if name == "left_mouse_up":
-        room.xdo("mouseup", 1)
+        run("mouseup", 1)
         return "OK"
     if name == "scroll":
         n = int(inp.get("scroll_amount", 3))
         args = (["mousemove", coord[0], coord[1]] if coord else []) + ["click", "--repeat", n, "--delay", 40, SCROLL_BUTTONS[inp["scroll_direction"]]]
-        room.xdo(*with_mods(inp.get("text"), args))
+        run(*with_mods(inp.get("text"), args))
         return "OK"
     if name == "type":
-        room.xdo("type", "--delay", 12, "--", inp["text"])
+        run("type", "--delay", 12, "--", inp["text"])
         return "OK"
     if name == "key":
-        room.xdo("key", "--repeat", int(inp.get("repeat", 1)), "--delay", 60, "--", inp["text"])
+        run("key", "--repeat", int(inp.get("repeat", 1)), "--delay", 60, "--", inp["text"])
         return "OK"
     if name == "hold_key":
         d = min(float(inp["duration"]), 30)
@@ -131,19 +148,29 @@ def main() -> int:
     ap.add_argument("--launch", action="append", default=[], help="command to start on the desktop first, e.g. 'browser https://example.com'")
     ap.add_argument("--out", default="runs", help="directory for screenshots and the receipt log")
     ap.add_argument("--model", default=MODEL)
+    ap.add_argument("--one-call-steps", action="store_true",
+                    help="run the last input of a turn and its screenshot as one exec (the room's `step`), "
+                         "which halves the round trips per step; needs a desktop image that has `step`")
+    ap.add_argument("--settle-ms", type=int, default=300,
+                    help="with --one-call-steps: milliseconds to let the screen settle before the screenshot (0 to 10000)")
     args = ap.parse_args()
 
+    if not 0 <= args.settle_ms <= 10000:
+        ap.error("--settle-ms must be 0 to 10000")
     room = Room(args.sandbox)
+    room.settle_ms = args.settle_ms
     run_dir = Path(args.out) / dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir.mkdir(parents=True, exist_ok=True)
     shots = 0
 
-    def snap() -> str:
+    def keep(b64: str) -> str:
         nonlocal shots
-        b64 = room.screenshot()
         (run_dir / f"step-{shots:03d}.png").write_bytes(base64.b64decode(b64))
         shots += 1
         return b64
+
+    def snap() -> str:
+        return keep(room.screenshot())
 
     outcome = "max turns reached"
     succeeded = False
@@ -185,7 +212,7 @@ def main() -> int:
                 succeeded = resp.stop_reason == "end_turn" and not tool_uses
                 outcome = f"done ({resp.stop_reason})" if succeeded else f"incomplete ({resp.stop_reason})"
                 break
-            results, failed = [], False
+            results, failed, fused = [], False, None
             for tu in tool_uses:
                 base = {"type": "tool_result", "tool_use_id": tu.id, "toolset_name": "computer"}
                 if failed:
@@ -194,7 +221,11 @@ def main() -> int:
                 inp = dict(tu.input or {})
                 try:
                     prior_receipts = len(room.receipts)
-                    r = do_action(room, tu.name, inp)
+                    # Only the last input of the turn: that is the one whose screenshot the model gets.
+                    shot_out = [] if (args.one_call_steps and tu is tool_uses[-1] and tu.name in FUSABLE) else None
+                    r = do_action(room, tu.name, inp, shot_out)
+                    if shot_out:
+                        fused = keep(shot_out[-1])
                     content = [image_block(snap())] if r == "image" else [{"type": "text", "text": r}]
                     results.append({**base, "content": content})
                     new_receipts = room.receipts[prior_receipts:]
@@ -206,7 +237,7 @@ def main() -> int:
                     results.append({**base, "is_error": True, "content": [{"type": "text", "text": f"{type(e).__name__}: {e}"[:500]}]})
                     print(f"[turn {turn}] {tu.name} failed: {e}", file=sys.stderr)
             if tool_uses[-1].name != "screenshot" and not failed:
-                results[-1]["content"] = list(results[-1]["content"]) + [image_block(snap())]
+                results[-1]["content"] = list(results[-1]["content"]) + [image_block(fused if fused is not None else snap())]
             messages.append({"role": "user", "content": results})
 
     except BaseException as exc:

@@ -126,7 +126,7 @@ What this does and does not show (details in `tee/build/README.md`):
 | `desktop/shot` | screenshot to `/work/screen.png`; `--b64` prints it for one-call capture |
 | `desktop/browser` | Chromium with the flags that work as root under gVisor |
 | `ctdesk` | the CLI above, customer path only (`ctcli sandbox exec/download`) |
-| `agent/cathedral_computer_use.py` | computer-use loop; one receipted exec per action |
+| `agent/cathedral_computer_use.py` | computer-use loop; one receipted exec per action and per screenshot. `--one-call-steps` runs the last input of a turn and its screenshot as one exec (the room's `step`), so a step is one round trip, not two |
 | `Dockerfile` | the prebuilt image: runs `desktop/bootstrap` at build, base image and cloudflared pinned |
 | `.github/workflows/publish-image.yml` | builds and pushes the image to GHCR, by hand only |
 | `evidence/` | screenshots from live rooms |
