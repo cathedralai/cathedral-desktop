@@ -31,6 +31,19 @@ if [ "$need" = 1 ]; then
   apt-get clean
   : > /tmp/cloudflared.deb
 fi
+# Optional, for `desktop-up --server kasm`: KasmVNC, only when the build names a version (the Dockerfile
+# pins KASMVNC_VERSION and KASMVNC_SHA256). A stock room bootstrap does not install it.
+if [ -n "${KASMVNC_VERSION:-}" ] && ! command -v Xkasmvnc >/dev/null; then
+  APT="apt-get -qq -o DPkg::Lock::Timeout=300"
+  [ -n "$(ls /var/lib/apt/lists 2>/dev/null)" ] || $APT update
+  curl -fsSL -o /tmp/kasmvnc.deb "https://github.com/kasmtech/KasmVNC/releases/download/v${KASMVNC_VERSION}/kasmvncserver_debian_trixie_${KASMVNC_VERSION}_amd64.deb"
+  if [ -n "${KASMVNC_SHA256:-}" ]; then
+    echo "${KASMVNC_SHA256}  /tmp/kasmvnc.deb" | sha256sum -c - >/dev/null
+  fi
+  $APT install -y --no-install-recommends /tmp/kasmvnc.deb >/dev/null
+  apt-get clean
+  : > /tmp/kasmvnc.deb
+fi
 mkdir -p /opt/desktop/web /work /usr/share/themes/Cathedral/openbox-3
 install -m 755 "$HERE/desktop-up" "$HERE/shot" "$HERE/browser" /usr/local/bin/
 install -m 644 "$HERE/theme/openbox-themerc" /usr/share/themes/Cathedral/openbox-3/themerc

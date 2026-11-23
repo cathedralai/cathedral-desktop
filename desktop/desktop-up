@@ -8,10 +8,13 @@
 #        --vnc-auth none  x11vnc with no password. Only where something else is the gate: in a TEE
 #                      box the sealed stream (attested, ticketed) is, and x11vnc is localhost only.
 #                      The default, password, is what the public tunnel path needs.
+#        --server kasm  KasmVNC is the display and the web server (no Xvfb, x11vnc or websockify). Opt in,
+#                      for the speed test: it sends only changed regions as WebP/JPEG. The web client on
+#                      6080 asks for user "cathedral" and the same password. Default stays x11vnc.
 #        --foreground  stay attached (daemons otherwise outlive the exec that started them)
 # VNC password: $VNC_PASSWORD, else generated once into /work/vnc-password (0600).
 set -u
-TUNNEL=0; FG=0; RESTART=0; ROOM="${DESKTOP_ROOM:-}"; RES="${DESKTOP_RES:-1280x800}"; VNC_AUTH="${DESKTOP_VNC_AUTH:-password}"
+TUNNEL=0; FG=0; RESTART=0; ROOM="${DESKTOP_ROOM:-}"; RES="${DESKTOP_RES:-1280x800}"; VNC_AUTH="${DESKTOP_VNC_AUTH:-password}"; SERVER="${DESKTOP_SERVER:-x11vnc}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --tunnel) TUNNEL=1 ;;
@@ -19,10 +22,15 @@ while [ $# -gt 0 ]; do
     --restart) RESTART=1 ;;
     --room) ROOM="$2"; shift ;;
     --vnc-auth) VNC_AUTH="$2"; shift ;;
+    --server) SERVER="$2"; shift ;;
     --res) RES="$2"; shift ;;
   esac
   shift
 done
+case "$SERVER" in x11vnc|kasm) ;; *) echo "desktop-up: --server must be x11vnc or kasm" >&2; exit 2 ;; esac
+if [ "$SERVER" = kasm ] && ! command -v Xkasmvnc >/dev/null; then
+  echo "desktop-up: --server kasm needs KasmVNC in the image (build with KASMVNC_VERSION set)" >&2; exit 2
+fi
 export DISPLAY=:1 XDG_CONFIG_HOME=/root/.config
 mkdir -p /work /run/desktop /root/.config/openbox /root/.config/gtk-3.0 /root/.config/xfce4/terminal
 echo starting > /run/desktop/state
@@ -66,8 +74,34 @@ MENU
 [ -f /opt/desktop/apply-openbox.py ] && python3 /opt/desktop/apply-openbox.py >/dev/null 2>&1
 [ -f /opt/desktop/gtk-settings.ini ] && cp /opt/desktop/gtk-settings.ini /root/.config/gtk-3.0/settings.ini
 [ -f /opt/desktop/terminalrc ] && cp /opt/desktop/terminalrc /root/.config/xfce4/terminal/terminalrc
+# The room password is needed before the display starts when KasmVNC is the display.
+PW=""
+if [ "$VNC_AUTH" != none ]; then
+  PW="${VNC_PASSWORD:-}"
+  if [ -z "$PW" ]; then
+    if [ ! -s /work/vnc-password ]; then
+      head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 12 > /work/vnc-password
+      chmod 600 /work/vnc-password
+    fi
+    PW="$(cat /work/vnc-password)"
+  fi
+fi
 if ! xdpyinfo >/dev/null 2>&1; then
-  setsid Xvfb :1 -screen 0 "${RES}x24" -nolisten tcp -ac +extension RANDR >/run/desktop/xvfb.log 2>&1 < /dev/null &
+  if [ "$SERVER" = kasm ]; then
+    # KasmVNC is the X server itself, so nothing scrapes the screen. It listens on localhost only and
+    # speaks plain HTTP: the tunnel (or the edge) is the TLS end, as with websockify today.
+    KASM_AUTH="-DisableBasicAuth 1"
+    if [ "$VNC_AUTH" != none ]; then
+      printf '%s\n%s\n' "$PW" "$PW" | kasmvncpasswd -u cathedral -w -o /run/desktop/kasmpasswd >/dev/null 2>&1
+      chmod 600 /run/desktop/kasmpasswd
+      KASM_AUTH="-KasmPasswordFile /run/desktop/kasmpasswd"
+    fi
+    setsid Xkasmvnc :1 -geometry "$RES" -depth 24 -nolisten tcp -ac -SecurityTypes None $KASM_AUTH \
+      -interface 127.0.0.1 -websocketPort 6080 -httpd /usr/share/kasmvnc/www -sslOnly 0 -AlwaysShared \
+      -FrameRate 60 >/run/desktop/kasmvnc.log 2>&1 < /dev/null &
+  else
+    setsid Xvfb :1 -screen 0 "${RES}x24" -nolisten tcp -ac +extension RANDR >/run/desktop/xvfb.log 2>&1 < /dev/null &
+  fi
   for _ in $(seq 1 100); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
 fi
 if running -x openbox; then openbox --reconfigure; else setsid openbox >/run/desktop/openbox.log 2>&1 < /dev/null & sleep 0.6; fi
@@ -84,18 +118,10 @@ if [ ! -s /opt/desktop/wallpaper.png ] || [ "$RESTART" = 1 ]; then
 fi
 xsetroot -solid '#0B0D11'
 feh --no-fehbg --bg-fill /opt/desktop/wallpaper.png >/dev/null 2>&1 || true
-PW=""
+if [ "$SERVER" = x11vnc ]; then
 if [ "$VNC_AUTH" = none ]; then
   VNC_ARGS="-nopw"
 else
-  PW="${VNC_PASSWORD:-}"
-  if [ -z "$PW" ]; then
-    if [ ! -s /work/vnc-password ]; then
-      head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 12 > /work/vnc-password
-      chmod 600 /work/vnc-password
-    fi
-    PW="$(cat /work/vnc-password)"
-  fi
   x11vnc -storepasswd "$PW" /run/desktop/vncpass >/dev/null 2>&1
   VNC_ARGS="-rfbauth /run/desktop/vncpass"
 fi
@@ -105,6 +131,9 @@ fi
 running -x x11vnc || setsid x11vnc -display :1 $VNC_ARGS -rfbport 5901 -localhost -forever -shared -noxdamage -defer 5 -wait 5 -quiet >/run/desktop/x11vnc.log 2>&1 < /dev/null &
 WEB=/usr/share/novnc; [ -f /opt/desktop/web/index.html ] && WEB=/opt/desktop/web
 running -f websockify || setsid websockify --web "$WEB" 6080 localhost:5901 >/run/desktop/websockify.log 2>&1 < /dev/null &
+else
+  WEB=/usr/share/kasmvnc/www
+fi
 BASE=""
 if [ "$TUNNEL" = 1 ]; then
   if running -x cloudflared && [ -s /run/desktop/cloudflared.log ]; then
@@ -124,14 +153,16 @@ URL=""
 if [ -n "$BASE" ]; then
   # The password rides in the fragment on both pages, so it never reaches the tunnel or the server.
   # Stock vnc.html (noVNC 1.6.0 in trixie) reads its settings from the fragment before the query.
-  if [ "$WEB" = /opt/desktop/web ]; then URL="${BASE}/#p=${PW}${ROOM:+&room=$ROOM}"
+  if [ "$SERVER" = kasm ]; then URL="${BASE}/"   # KasmVNC asks for user "cathedral" and the room password
+  elif [ "$WEB" = /opt/desktop/web ]; then URL="${BASE}/#p=${PW}${ROOM:+&room=$ROOM}"
   else URL="${BASE}/vnc.html#autoconnect=1&resize=scale&password=${PW}"; fi
   printf '%s\n' "$URL" > /work/desktop-url.txt
-  printf '{"url":"%s","room":"%s","display":"%s","started_at":"%s"}\n' "$URL" "$ROOM" "$RES" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /work/desktop.json
+  printf '{"url":"%s","room":"%s","display":"%s","server":"%s","started_at":"%s"}\n' "$URL" "$ROOM" "$RES" "$SERVER" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /work/desktop.json
 fi
 sleep 1
 echo ready > /run/desktop/state
-echo "desktop ready on :1 (${RES}); vnc 5901 localhost only, auth ${VNC_AUTH}; web 6080 ($WEB)"
+if [ "$SERVER" = kasm ]; then echo "desktop ready on :1 (${RES}); KasmVNC web 6080 localhost only, auth ${VNC_AUTH}, user cathedral"
+else echo "desktop ready on :1 (${RES}); vnc 5901 localhost only, auth ${VNC_AUTH}; web 6080 ($WEB)"; fi
 [ -n "$URL" ] && echo "public: $URL"
 [ "$FG" = 1 ] && wait
 exit 0
