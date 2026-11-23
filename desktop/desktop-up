@@ -8,11 +8,11 @@
 #        --vnc-auth none  x11vnc with no password. Only where something else is the gate: in a TEE
 #                      box the sealed stream (attested, ticketed) is, and x11vnc is localhost only.
 #                      The default, password, is what the public tunnel path needs.
-#        --wallpaper V  the background. V is one of: cathedral (default, the branded one), neutral (plain
-#                      dark, no words), a colour as #RRGGBB, or a PNG/JPEG file in the room such as
-#                      /work/wallpaper.png. The choice is kept in /work/desktop-wallpaper, so a later
-#                      desktop-up or --restart keeps it. Any value but cathedral also drops the name
-#                      from the right-click menu.
+#        --wallpaper V  the background. V is one of: neutral (default: plain dark, no words), cathedral
+#                      (the branded picture), a colour as #RRGGBB, or a PNG/JPEG file in the room such
+#                      as /work/wallpaper.png. The choice is kept in /work/desktop-wallpaper, so a later
+#                      desktop-up or --restart keeps it. Only cathedral puts the name on the right-click
+#                      menu. A customer's desktop carries no Cathedral branding unless they ask for it.
 #        --server kasm  KasmVNC is the display and the web server (no Xvfb, x11vnc or websockify). Opt in,
 #                      for the speed test: it sends only changed regions as WebP/JPEG. The web client on
 #                      6080 asks for user "cathedral" and the same password. Default stays x11vnc.
@@ -43,7 +43,7 @@ echo starting > /run/desktop/state
 # Wallpaper choice: the flag or DESKTOP_WALLPAPER wins and is saved; otherwise the saved one; else cathedral.
 if [ -n "$WALL" ]; then printf '%s\n' "$WALL" > /work/desktop-wallpaper
 elif [ -s /work/desktop-wallpaper ]; then WALL="$(head -n 1 /work/desktop-wallpaper)"
-else WALL=cathedral; fi
+else WALL=neutral; fi
 MENU_LABEL=Cathedral; [ "$WALL" = cathedral ] || MENU_LABEL=Desktop
 # pgrep also lists zombies, and in a sealed room pid 1 is `sleep infinity`, which never
 # reaps them: a killed openbox stays listed forever (seen live 10 Nov, state Z, ppid 1).

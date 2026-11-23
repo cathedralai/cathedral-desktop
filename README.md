@@ -119,7 +119,7 @@ What this does and does not show (details in `tee/build/README.md`):
 | Path | Role |
 |---|---|
 | `desktop/bootstrap` | apt install of the desktop stack inside a stock room, idempotent, about 60 s |
-| `desktop/desktop-up` | starts Xvfb, openbox, picom, tint2, x11vnc, the branded page, optional tunnel; `--restart` reloads the look; `--wallpaper neutral`, `--wallpaper '#RRGGBB'` or `--wallpaper /work/your.png` replaces the Cathedral background |
+| `desktop/desktop-up` | starts Xvfb, openbox, picom, tint2, x11vnc, the branded page, optional tunnel; `--restart` reloads the look; the background is plain dark by default; `--wallpaper '#RRGGBB'` or `--wallpaper /work/your.png` sets the customer's own, `--wallpaper cathedral` the branded one |
 | `desktop/theme/` | openbox theme, tint2 panel, picom, terminal colours, GTK dark, wallpaper renderer, launcher entries |
 | `desktop/web/index.html` | the branded noVNC page: status chip, room id, password from the URL fragment |
 | `desktop/shot` | screenshot to `/work/screen.png`; `--b64` prints it for one-call capture |
