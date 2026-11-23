@@ -8,10 +8,15 @@
 #        --vnc-auth none  x11vnc with no password. Only where something else is the gate: in a TEE
 #                      box the sealed stream (attested, ticketed) is, and x11vnc is localhost only.
 #                      The default, password, is what the public tunnel path needs.
+#        --wallpaper V  the background. V is one of: cathedral (default, the branded one), neutral (plain
+#                      dark, no words), a colour as #RRGGBB, or a PNG/JPEG file in the room such as
+#                      /work/wallpaper.png. The choice is kept in /work/desktop-wallpaper, so a later
+#                      desktop-up or --restart keeps it. Any value but cathedral also drops the name
+#                      from the right-click menu.
 #        --foreground  stay attached (daemons otherwise outlive the exec that started them)
 # VNC password: $VNC_PASSWORD, else generated once into /work/vnc-password (0600).
 set -u
-TUNNEL=0; FG=0; RESTART=0; ROOM="${DESKTOP_ROOM:-}"; RES="${DESKTOP_RES:-1280x800}"; VNC_AUTH="${DESKTOP_VNC_AUTH:-password}"
+TUNNEL=0; FG=0; RESTART=0; ROOM="${DESKTOP_ROOM:-}"; RES="${DESKTOP_RES:-1280x800}"; VNC_AUTH="${DESKTOP_VNC_AUTH:-password}"; WALL="${DESKTOP_WALLPAPER:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --tunnel) TUNNEL=1 ;;
@@ -20,12 +25,18 @@ while [ $# -gt 0 ]; do
     --room) ROOM="$2"; shift ;;
     --vnc-auth) VNC_AUTH="$2"; shift ;;
     --res) RES="$2"; shift ;;
+    --wallpaper) WALL="$2"; shift ;;
   esac
   shift
 done
 export DISPLAY=:1 XDG_CONFIG_HOME=/root/.config
 mkdir -p /work /run/desktop /root/.config/openbox /root/.config/gtk-3.0 /root/.config/xfce4/terminal
 echo starting > /run/desktop/state
+# Wallpaper choice: the flag or DESKTOP_WALLPAPER wins and is saved; otherwise the saved one; else cathedral.
+if [ -n "$WALL" ]; then printf '%s\n' "$WALL" > /work/desktop-wallpaper
+elif [ -s /work/desktop-wallpaper ]; then WALL="$(head -n 1 /work/desktop-wallpaper)"
+else WALL=cathedral; fi
+MENU_LABEL=Cathedral; [ "$WALL" = cathedral ] || MENU_LABEL=Desktop
 # pgrep also lists zombies, and in a sealed room pid 1 is `sleep infinity`, which never
 # reaps them: a killed openbox stays listed forever (seen live 10 Nov, state Z, ppid 1).
 # So count a process as running only when it exists and is not a zombie. Every start
@@ -51,10 +62,10 @@ if [ "$RESTART" = 1 ]; then
   if desktop_procs_alive; then echo "desktop-up: old desktop processes did not exit" >&2; echo failed > /run/desktop/state; exit 1; fi
 fi
 # Right-click menu: terminal and browser (the Debian menu file is not installed).
-cat > /root/.config/openbox/menu.xml <<'MENU'
+cat > /root/.config/openbox/menu.xml <<MENU
 <?xml version="1.0" encoding="UTF-8"?>
 <openbox_menu xmlns="http://openbox.org/3.4/menu">
-  <menu id="root-menu" label="Cathedral">
+  <menu id="root-menu" label="$MENU_LABEL">
     <item label="Terminal"><action name="Execute"><command>xfce4-terminal</command></action></item>
     <item label="Browser"><action name="Execute"><command>browser</command></action></item>
     <item label="Calculator"><action name="Execute"><command>xcalc</command></action></item>
@@ -83,7 +94,16 @@ if [ ! -s /opt/desktop/wallpaper.png ] || [ "$RESTART" = 1 ]; then
   [ -x /opt/desktop/wallpaper.sh ] && /opt/desktop/wallpaper.sh /opt/desktop/wallpaper.png "$RES" >/dev/null 2>&1
 fi
 xsetroot -solid '#0B0D11'
-feh --no-fehbg --bg-fill /opt/desktop/wallpaper.png >/dev/null 2>&1 || true
+case "$WALL" in
+  cathedral) feh --no-fehbg --bg-fill /opt/desktop/wallpaper.png >/dev/null 2>&1 || true ;;
+  neutral) ;;  # the plain dark base set above, no words
+  '#'[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) xsetroot -solid "$WALL" ;;
+  /*)
+    # A customer's own picture. A file feh cannot read leaves the plain dark base, never the branded one.
+    if [ -f "$WALL" ] && feh --no-fehbg --bg-fill "$WALL" >/dev/null 2>&1; then :
+    else echo "desktop-up: wallpaper $WALL is not a readable PNG or JPEG; using the plain background" >&2; fi ;;
+  *) echo "desktop-up: --wallpaper must be cathedral, neutral, #RRGGBB or a file path; using the plain background" >&2 ;;
+esac
 PW=""
 if [ "$VNC_AUTH" = none ]; then
   VNC_ARGS="-nopw"
