@@ -31,6 +31,7 @@ docker exec "$name" pkill -x x11vnc
 test "$(timeout 15 docker wait "$name")" = 1
 docker cp "$name:/run/desktop/state" "$TMP/state"
 test "$(cat "$TMP/state")" = failed
+echo 'Local startup and service-exit check passed'
 
 # The declared CMD must fail closed when no tunnel can be issued.
 name="desktop-no-tunnel-$RANDOM"
@@ -39,6 +40,7 @@ docker run -d --network none --name "$name" "$IMAGE" >/dev/null
 test "$(timeout 90 docker wait "$name")" = 1
 docker cp "$name:/run/desktop/state" "$TMP/state"
 test "$(cat "$TMP/state")" = failed
+echo 'Offline tunnel refusal check passed'
 
 # The current service overrides CMD and still starts the desktop through exec.
 name="desktop-legacy-$RANDOM"
@@ -46,6 +48,6 @@ NAMES+=("$name")
 docker run -d --network none --name "$name" "$IMAGE" sleep infinity >/dev/null
 timeout 60 docker exec "$name" desktop-up >/dev/null
 wait_ready "$name"
-docker exec "$name" xdpyinfo >/dev/null
+docker exec "$name" xdpyinfo -display :1 >/dev/null
 test "$(docker inspect "$name" --format '{{.State.Running}}')" = true
 echo 'Desktop image smoke checks passed'
