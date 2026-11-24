@@ -1,6 +1,40 @@
 #!/bin/bash
-# Screenshot the virtual desktop to /work/screen.png. --b64 prints it base64 on stdout for one-call capture.
+# Screenshot the virtual desktop. Default: PNG to /work/screen.png. --b64 prints it base64 on stdout for one-call capture.
+# An agent that sends every screenshot to a model pays for every byte, so smaller is faster:
+#   --jpeg [Q]        JPEG at quality Q (1 to 100, default 70), written to /work/screen.jpg
+#   --scale PCT       resize to PCT percent (1 to 100) before encoding
+#   --region X,Y,W,H  capture only that rectangle
+# Without those flags nothing changes: same file, same bytes as before.
 export DISPLAY=:1
-out=/work/screen.png
-scrot -o "$out" >/dev/null 2>&1 || import -window root "$out"
-if [ "${1:-}" = "--b64" ]; then base64 -w0 "$out"; else ls -l "$out"; fi
+b64=0; fmt=png; q=70; scale=100; region=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --b64) b64=1 ;;
+    --jpeg) fmt=jpg; case "${2:-}" in ''|--*) ;; *) q="$2"; shift ;; esac ;;
+    --scale) scale="${2:-}"; shift ;;
+    --region) region="${2:-}"; shift ;;
+    *) echo "shot: unknown argument $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+int_1_100() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -ge 1 ] && [ "$1" -le 100 ]; }
+int_1_100 "$q" || { echo "shot: --jpeg quality must be 1 to 100" >&2; exit 2; }
+int_1_100 "$scale" || { echo "shot: --scale must be 1 to 100" >&2; exit 2; }
+if [ -n "$region" ] && ! [[ "$region" =~ ^[0-9]+,[0-9]+,[0-9]+,[0-9]+$ ]]; then
+  echo "shot: --region must be X,Y,W,H" >&2; exit 2
+fi
+out="/work/screen.$fmt"
+args=(-o); [ -n "$region" ] && args+=(-a "$region")
+if [ "$scale" = 100 ]; then
+  [ "$fmt" = jpg ] && args+=(-q "$q")
+  if ! scrot "${args[@]}" "$out" >/dev/null 2>&1; then
+    # The old fallback, for the plain full-screen PNG only.
+    if [ "$fmt" = png ] && [ -z "$region" ]; then import -window root "$out"; else echo "shot: capture failed" >&2; exit 1; fi
+  fi
+else
+  tmp="$(mktemp /tmp/shot-XXXXXX.png)"
+  scrot "${args[@]}" "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; echo "shot: capture failed" >&2; exit 1; }
+  if [ "$fmt" = jpg ]; then magick "$tmp" -resize "${scale}%" -quality "$q" "$out"; else magick "$tmp" -resize "${scale}%" "$out"; fi
+  rc=$?; rm -f "$tmp"; [ "$rc" = 0 ] || { echo "shot: resize failed" >&2; exit 1; }
+fi
+if [ "$b64" = 1 ]; then base64 -w0 "$out"; else ls -l "$out"; fi

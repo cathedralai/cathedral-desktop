@@ -71,6 +71,10 @@
     rfb = new RFB(document.getElementById('screen'), url, password ? { credentials: { password } } : {});
     rfb.scaleViewport = true;
     rfb.resizeSession = false;
+    // Tuned for the WAN tunnel: Tight with JPEG at quality 6 of 9 and light zlib (2 of 9). Fewer bytes per
+    // frame without a CPU cost that slows the room. noVNC's defaults today, set here so an update cannot move them.
+    rfb.qualityLevel = 6;
+    rfb.compressionLevel = 2;
     rfb.background = '#000';
     rfb.addEventListener('connect', () => { set('on', 'live'); ask.hidden = true; gone.hidden = true; rfb.focus(); });
     rfb.addEventListener('credentialsrequired', () => { set('wait', 'password'); ask.hidden = false; document.getElementById('ask-pw').focus(); });

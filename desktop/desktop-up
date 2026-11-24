@@ -1,17 +1,31 @@
 #!/bin/bash
-# Start the virtual desktop: Xvfb :1, openbox (Cathedral theme), picom, tint2, x11vnc (localhost only),
-# the branded noVNC page on 6080 and, with --tunnel, a cloudflared quick tunnel.
+# Start the virtual desktop: display :1 (TigerVNC by default), openbox, picom, tint2, a VNC server on
+# 5901 (localhost only), the branded noVNC page on 6080 and, with --tunnel, a cloudflared quick tunnel.
 # Flags: --tunnel      public URL written to /work/desktop-url.txt (password rides in the URL fragment)
 #        --room ID     sandbox id shown on the page and written to /work/desktop.json
 #        --res WxH     screen size (default 1280x800)
-#        --restart     restart the window manager, panel, compositor, VNC and web server (keeps Xvfb, apps, tunnel)
-#        --vnc-auth none  x11vnc with no password. Only where something else is the gate: in a TEE
-#                      box the sealed stream (attested, ticketed) is, and x11vnc is localhost only.
+#        --restart     restart the window manager, panel, compositor, VNC and web server (keeps the display, apps, tunnel)
+#        --vnc-auth none  VNC with no password. Only where something else is the gate: in a TEE
+#                      box the sealed stream (attested, ticketed) is, and VNC is localhost only.
 #                      The default, password, is what the public tunnel path needs.
+#        --server S    the display server, fixed for the life of the room:
+#                      tigervnc (default)  Xtigervnc is display :1 and the RFB server itself, so nothing
+#                                 scrapes the screen. Standard RFB and password file: the page, the link
+#                                 (#p=...) and the console's status line are the same as with x11vnc.
+#                      x11vnc     the fallback: Xvfb is the display and x11vnc scrapes it.
+#                      kasm       opt in, exec start only: KasmVNC is the display and the web server (no
+#                                 websockify, no branded page). Its client asks for user "cathedral" and the
+#                                 room password and has no #p= link, so the console cannot frame it.
+#        --wallpaper V  the background. V is one of: neutral (default: plain dark, no words), cathedral
+#                      (the branded picture), a colour as #RRGGBB, or a PNG/JPEG file in the room such
+#                      as /work/wallpaper.png. The choice is kept in /work/desktop-wallpaper, so a later
+#                      desktop-up or --restart keeps it. Only cathedral puts the name on the right-click
+#                      menu. A customer's desktop carries no Cathedral branding unless they ask for it.
 #        --foreground  exclusive image startup: check readiness and supervise the desktop
 # VNC password: $VNC_PASSWORD, else generated once into /work/vnc-password (0600).
 set -u
 TUNNEL=0; FG=0; RESTART=0; ROOM="${DESKTOP_ROOM:-}"; RES="${DESKTOP_RES:-1280x800}"; VNC_AUTH="${DESKTOP_VNC_AUTH:-password}"
+WALL="${DESKTOP_WALLPAPER:-}"; SERVER="${DESKTOP_SERVER:-tigervnc}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --tunnel) TUNNEL=1 ;;
@@ -19,10 +33,19 @@ while [ $# -gt 0 ]; do
     --restart) RESTART=1 ;;
     --room) ROOM="$2"; shift ;;
     --vnc-auth) VNC_AUTH="$2"; shift ;;
+    --server) SERVER="$2"; shift ;;
     --res) RES="$2"; shift ;;
+    --wallpaper) WALL="$2"; shift ;;
   esac
   shift
 done
+case "$SERVER" in tigervnc|x11vnc|kasm) ;; *) echo "desktop-up: --server must be tigervnc, x11vnc or kasm" >&2; exit 2 ;; esac
+if [ "$SERVER" = tigervnc ] && ! command -v Xtigervnc >/dev/null; then
+  echo "desktop-up: --server tigervnc needs TigerVNC in the image (tigervnc-standalone-server); --server x11vnc is the fallback" >&2; exit 2
+fi
+if [ "$SERVER" = kasm ] && ! command -v Xkasmvnc >/dev/null; then
+  echo "desktop-up: --server kasm needs KasmVNC in the image (build with KASMVNC_VERSION set)" >&2; exit 2
+fi
 # Keep the legacy exec path detached. Foreground owns a fresh process tree.
 CHILDREN=()
 launch() {
@@ -53,9 +76,26 @@ running() {
   done
   return 1
 }
+# The display server cannot be swapped under a running desktop: it IS display :1, and every open app
+# lives on it. Asking for another one used to skip the start quietly and report "ready" with the old
+# viewer still up (and --restart then left no viewer at all). Refuse instead, and change nothing.
+mine=Xtigervnc; [ "$SERVER" = x11vnc ] && mine=Xvfb; [ "$SERVER" = kasm ] && mine=Xkasmvnc
+for other in Xtigervnc Xvfb Xkasmvnc; do
+  [ "$other" = "$mine" ] && continue
+  if running -x "$other"; then
+    echo "desktop-up: this desktop already runs on $other; --server $SERVER needs a fresh room (the display cannot be switched while apps are open)" >&2
+    exit 2
+  fi
+done
 if [ "$FG" = 1 ]; then
+  # The supervisor's readiness check is the branded page on 6080 and an RFB greeting on 5901. KasmVNC
+  # has neither (its client is behind basic auth), so it stays on the exec path.
+  if [ "$SERVER" = kasm ]; then
+    echo 'desktop-up: --server kasm is exec start only, not --foreground' >&2
+    exit 2
+  fi
   # Do not attach the image supervisor to a desktop owned by an earlier exec.
-  if running -x Xvfb || running -x openbox || running -x picom || running -x tint2 || running -x x11vnc || running -f websockify || running -x cloudflared; then
+  if running -x Xtigervnc || running -x Xvfb || running -x Xkasmvnc || running -x openbox || running -x picom || running -x tint2 || running -x x11vnc || running -f websockify || running -x cloudflared; then
     echo 'desktop-up: foreground requires a fresh desktop' >&2
     exit 1
   fi
@@ -71,6 +111,11 @@ echo starting > /run/desktop/state
 desktop_procs_alive() {
   running -x openbox || running -x tint2 || running -x picom || running -x x11vnc || running -f websockify
 }
+# Wallpaper choice: the flag or DESKTOP_WALLPAPER wins and is saved; otherwise the saved one; else neutral.
+if [ -n "$WALL" ]; then printf '%s\n' "$WALL" > /work/desktop-wallpaper
+elif [ -s /work/desktop-wallpaper ]; then WALL="$(head -n 1 /work/desktop-wallpaper)"
+else WALL=neutral; fi
+MENU_LABEL=Cathedral; [ "$WALL" = cathedral ] || MENU_LABEL=Desktop
 if [ "$RESTART" = 1 ]; then
   pkill -x openbox; pkill -x tint2; pkill -x picom; pkill -x x11vnc; pkill -f websockify
   for _ in $(seq 1 50); do desktop_procs_alive || break; sleep 0.1; done
@@ -81,10 +126,10 @@ if [ "$RESTART" = 1 ]; then
   if desktop_procs_alive; then echo "desktop-up: old desktop processes did not exit" >&2; echo failed > /run/desktop/state; exit 1; fi
 fi
 # Right-click menu: terminal and browser (the Debian menu file is not installed).
-cat > /root/.config/openbox/menu.xml <<'MENU'
+cat > /root/.config/openbox/menu.xml <<MENU
 <?xml version="1.0" encoding="UTF-8"?>
 <openbox_menu xmlns="http://openbox.org/3.4/menu">
-  <menu id="root-menu" label="Cathedral">
+  <menu id="root-menu" label="$MENU_LABEL">
     <item label="Terminal"><action name="Execute"><command>xfce4-terminal</command></action></item>
     <item label="Browser"><action name="Execute"><command>browser</command></action></item>
     <item label="Calculator"><action name="Execute"><command>xcalc</command></action></item>
@@ -96,8 +141,47 @@ MENU
 [ -f /opt/desktop/apply-openbox.py ] && python3 /opt/desktop/apply-openbox.py >/dev/null 2>&1
 [ -f /opt/desktop/gtk-settings.ini ] && cp /opt/desktop/gtk-settings.ini /root/.config/gtk-3.0/settings.ini
 [ -f /opt/desktop/terminalrc ] && cp /opt/desktop/terminalrc /root/.config/xfce4/terminal/terminalrc
+# The room password is needed before the display starts when TigerVNC or KasmVNC is the display.
+PW=""
+if [ "$VNC_AUTH" != none ]; then
+  PW="${VNC_PASSWORD:-}"
+  if [ -z "$PW" ]; then
+    if [ ! -s /work/vnc-password ]; then
+      head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 12 > /work/vnc-password
+      chmod 600 /work/vnc-password
+    fi
+    PW="$(cat /work/vnc-password)"
+  fi
+  # The standard VNC password file; x11vnc and TigerVNC both read it.
+  [ "$SERVER" = kasm ] || x11vnc -storepasswd "$PW" /run/desktop/vncpass >/dev/null 2>&1
+fi
 if ! xdpyinfo >/dev/null 2>&1; then
-  launch Xvfb :1 -screen 0 "${RES}x24" -nolisten tcp -ac +extension RANDR >/run/desktop/xvfb.log 2>&1
+  if [ "$SERVER" = tigervnc ]; then
+    # TigerVNC is the X server and the RFB server in one, so a change is encoded straight from its own
+    # framebuffer, with nothing polling the screen. -CompareFB 1: picom repaints whole frames
+    # (use-damage = false), so compare against the last frame and send only what really changed.
+    # The viewer picks the encoding (Tight with JPEG, see desktop/web/index.html).
+    if [ "$VNC_AUTH" = none ]; then TIGER_AUTH=(-SecurityTypes None)
+    else TIGER_AUTH=(-SecurityTypes VncAuth -rfbauth /run/desktop/vncpass); fi
+    launch Xtigervnc :1 -geometry "$RES" -depth 24 -nolisten tcp -ac -rfbport 5901 -localhost=1 "${TIGER_AUTH[@]}" \
+      -AlwaysShared -CompareFB 1 -FrameRate 60 >/run/desktop/tigervnc.log 2>&1
+  elif [ "$SERVER" = kasm ]; then
+    # KasmVNC is the X server itself, so nothing scrapes the screen. It listens on localhost only and
+    # speaks plain HTTP: the tunnel (or the edge) is the TLS end, as with websockify. -publicIP: without it
+    # KasmVNC asks public STUN servers for the room's address at start, which a sealed start must not do
+    # (and with no network it never comes up).
+    KASM_AUTH=(-DisableBasicAuth 1)
+    if [ "$VNC_AUTH" != none ]; then
+      printf '%s\n%s\n' "$PW" "$PW" | kasmvncpasswd -u cathedral -w -o /run/desktop/kasmpasswd >/dev/null 2>&1
+      chmod 600 /run/desktop/kasmpasswd
+      KASM_AUTH=(-KasmPasswordFile /run/desktop/kasmpasswd)
+    fi
+    launch Xkasmvnc :1 -geometry "$RES" -depth 24 -nolisten tcp -ac -SecurityTypes None "${KASM_AUTH[@]}" \
+      -interface 127.0.0.1 -websocketPort 6080 -httpd /usr/share/kasmvnc/www -sslOnly 0 -AlwaysShared \
+      -FrameRate 60 -publicIP 127.0.0.1 >/run/desktop/kasmvnc.log 2>&1
+  else
+    launch Xvfb :1 -screen 0 "${RES}x24" -nolisten tcp -ac +extension RANDR >/run/desktop/xvfb.log 2>&1
+  fi
   for _ in $(seq 1 100); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
 fi
 if running -x openbox; then openbox --reconfigure; else launch openbox >/run/desktop/openbox.log 2>&1; sleep 0.6; fi
@@ -113,28 +197,36 @@ if [ ! -s /opt/desktop/wallpaper.png ] || [ "$RESTART" = 1 ]; then
   [ -x /opt/desktop/wallpaper.sh ] && /opt/desktop/wallpaper.sh /opt/desktop/wallpaper.png "$RES" >/dev/null 2>&1
 fi
 xsetroot -solid '#0B0D11'
-feh --no-fehbg --bg-fill /opt/desktop/wallpaper.png >/dev/null 2>&1 || true
-PW=""
-if [ "$VNC_AUTH" = none ]; then
-  VNC_ARGS="-nopw"
+# Under picom the visible background is the root pixmap feh sets. xsetroot alone changes nothing once a
+# picture is there. So every choice goes through feh, with a small solid PNG for the plain base and a colour.
+solid_bg() {
+  magick -size 32x32 "xc:$1" /run/desktop/solid.png >/dev/null 2>&1 \
+    && feh --no-fehbg --bg-fill /run/desktop/solid.png >/dev/null 2>&1
+}
+case "$WALL" in
+  cathedral) feh --no-fehbg --bg-fill /opt/desktop/wallpaper.png >/dev/null 2>&1 || true ;;
+  neutral) solid_bg '#0B0D11' ;;  # plain dark, no words
+  '#'[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) solid_bg "$WALL" ;;
+  /*)
+    # A customer's own picture. A file feh cannot read gives the plain dark base, never the branded one.
+    if [ -f "$WALL" ] && feh --no-fehbg --bg-fill "$WALL" >/dev/null 2>&1; then :
+    else echo "desktop-up: wallpaper $WALL is not a readable PNG or JPEG; using the plain background" >&2; solid_bg '#0B0D11'; fi ;;
+  *) echo "desktop-up: --wallpaper must be cathedral, neutral, #RRGGBB or a file path; using the plain background" >&2; solid_bg '#0B0D11' ;;
+esac
+if [ "$SERVER" = kasm ]; then
+  WEB=/usr/share/kasmvnc/www
 else
-  PW="${VNC_PASSWORD:-}"
-  if [ -z "$PW" ]; then
-    if [ ! -s /work/vnc-password ]; then
-      head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 12 > /work/vnc-password
-      chmod 600 /work/vnc-password
-    fi
-    PW="$(cat /work/vnc-password)"
+  if [ "$SERVER" = x11vnc ]; then
+    if [ "$VNC_AUTH" = none ]; then VNC_ARGS="-nopw"; else VNC_ARGS="-rfbauth /run/desktop/vncpass"; fi
+    # AB#802: 5 ms (default 20) before sending an update and between screen checks, so a change goes out
+    # sooner on each frame the viewer requests. -noxdamage stays: under picom, X DAMAGE hints gained nothing
+    # in a local test and the one live run with picom on opened menus slower with them.
+    running -x x11vnc || launch x11vnc -display :1 $VNC_ARGS -rfbport 5901 -localhost -forever -shared -noxdamage -defer 5 -wait 5 -quiet >/run/desktop/x11vnc.log 2>&1
   fi
-  x11vnc -storepasswd "$PW" /run/desktop/vncpass >/dev/null 2>&1
-  VNC_ARGS="-rfbauth /run/desktop/vncpass"
+  # x11vnc and TigerVNC both speak RFB on 5901, so the same page and the same websockify serve either.
+  WEB=/usr/share/novnc; [ -f /opt/desktop/web/index.html ] && WEB=/opt/desktop/web
+  running -f websockify || launch websockify --web "$WEB" 6080 localhost:5901 >/run/desktop/websockify.log 2>&1
 fi
-# AB#802: 5 ms (default 20) before sending an update and between screen checks, so a change goes out
-# sooner on each frame the viewer requests. -noxdamage stays: under picom, X DAMAGE hints gained nothing
-# in a local test and the one live run with picom on opened menus slower with them.
-running -x x11vnc || launch x11vnc -display :1 $VNC_ARGS -rfbport 5901 -localhost -forever -shared -noxdamage -defer 5 -wait 5 -quiet >/run/desktop/x11vnc.log 2>&1
-WEB=/usr/share/novnc; [ -f /opt/desktop/web/index.html ] && WEB=/opt/desktop/web
-running -f websockify || launch websockify --web "$WEB" 6080 localhost:5901 >/run/desktop/websockify.log 2>&1
 BASE=""
 if [ "$TUNNEL" = 1 ]; then
   if running -x cloudflared && [ -s /run/desktop/cloudflared.log ]; then
@@ -154,13 +246,14 @@ URL=""
 if [ -n "$BASE" ]; then
   # The password rides in the fragment on both pages, so it never reaches the tunnel or the server.
   # Stock vnc.html (noVNC 1.6.0 in trixie) reads its settings from the fragment before the query.
-  if [ "$WEB" = /opt/desktop/web ]; then URL="${BASE}/#p=${PW}${ROOM:+&room=$ROOM}"
+  if [ "$SERVER" = kasm ]; then URL="${BASE}/"   # KasmVNC asks for user "cathedral" and the room password
+  elif [ "$WEB" = /opt/desktop/web ]; then URL="${BASE}/#p=${PW}${ROOM:+&room=$ROOM}"
   else URL="${BASE}/vnc.html#autoconnect=1&resize=scale&password=${PW}"; fi
   printf '%s\n' "$URL" > /work/desktop-url.txt
   # The room id comes from DESKTOP_ROOM for image startup; serialize it safely.
-  python3 - "$URL" "$ROOM" "$RES" <<'JSON' > /work/desktop.json
+  python3 - "$URL" "$ROOM" "$RES" "$SERVER" <<'JSON' > /work/desktop.json
 import datetime, json, sys
-print(json.dumps(dict(url=sys.argv[1], room=sys.argv[2], display=sys.argv[3],
+print(json.dumps(dict(url=sys.argv[1], room=sys.argv[2], display=sys.argv[3], server=sys.argv[4],
                      started_at=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))))
 JSON
 fi
@@ -173,6 +266,7 @@ if [ "$FG" = 1 ]; then
 fi
 sleep 1
 echo ready > /run/desktop/state
-echo "desktop ready on :1 (${RES}); vnc 5901 localhost only, auth ${VNC_AUTH}; web 6080 ($WEB)"
+if [ "$SERVER" = kasm ]; then echo "desktop ready on :1 (${RES}); KasmVNC web 6080 localhost only, auth ${VNC_AUTH}, user cathedral"
+else echo "desktop ready on :1 (${RES}); ${SERVER} vnc 5901 localhost only, auth ${VNC_AUTH}; web 6080 ($WEB)"; fi
 [ -n "$URL" ] && echo "public: $URL"
 exit 0
