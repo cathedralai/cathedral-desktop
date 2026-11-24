@@ -138,15 +138,21 @@ class SignalCleanupTests(unittest.TestCase):
         import subprocess
         import sys
         here = Path(__file__).resolve().parent
+        # The launch and the pid line sit inside the try, as the launch does in combined_check.main.
+        # They used to sit before it: a signal that landed between the print and the try raised
+        # SystemExit with no finally around it, the box lived on, and this test failed about once
+        # in 40 runs ("box survived signal 15") with nothing wrong in the code under test.
         script = (
             "import time, combined_check as r\n"
             "r._exit_on_signals()\n"
-            "b = r.Launched('exec sleep 300')\n"
-            "print(b.proc.pid, flush=True)\n"
+            "b = None\n"
             "try:\n"
+            "    b = r.Launched('exec sleep 300')\n"
+            "    print(b.proc.pid, flush=True)\n"
             "    time.sleep(60)\n"
             "finally:\n"
-            "    b.halt()\n"
+            "    if b is not None:\n"
+            "        b.halt()\n"
         )
         for signum in (signal.SIGTERM, signal.SIGHUP):
             proc = subprocess.Popen([sys.executable, "-c", script], cwd=here, stdout=subprocess.PIPE, text=True)
