@@ -41,9 +41,10 @@ A="$(addr)"; say "NET ${A:-none} via $DHCP_SCRIPT"
 [ -s /etc/boxd/ticket.pub ] || BOXD_FLAGS="${BOXD_FLAGS:-} -noticket"
 setsid boxd ${BOXD_FLAGS:-} >/run/boxd.log 2>&1 < /dev/null &
 export DISPLAY=:1
+# x11vnc explicitly: the rootfs (build-desktop-rootfs.sh) installs Xvfb and x11vnc, not TigerVNC.
 # No VNC password here: x11vnc listens on localhost inside the box and the sealed stream
 # (attested, single-use ticket) is the gate. A password would be a second secret to carry.
-/usr/local/bin/desktop-up --res 1280x800 --vnc-auth none --room "${BOX_ROOM:-box}" >/run/desktop.log 2>&1
+/usr/local/bin/desktop-up --server x11vnc --res 1280x800 --vnc-auth none --room "${BOX_ROOM:-box}" >/run/desktop.log 2>&1
 setsid browser --remote-debugging-port=9222 https://cathedral.computer >/dev/null 2>&1 < /dev/null &
 say "DESKTOP ready $(cut -d' ' -f1 /proc/uptime) $(tail -1 /run/desktop.log)"
 while read -r cmd rest < /dev/ttyS0; do
