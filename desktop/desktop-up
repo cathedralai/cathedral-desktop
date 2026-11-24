@@ -228,17 +228,38 @@ else
   running -f websockify || launch websockify --web "$WEB" 6080 localhost:5901 >/run/desktop/websockify.log 2>&1
 fi
 BASE=""
+# The quick-tunnel link from cloudflared's log. Its error line names the API host
+# (Post "https://api.trycloudflare.com/tunnel"), which is not a link.
+tunnel_url() {
+  grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /run/desktop/cloudflared.log | grep -v '^https://api\.trycloudflare\.com$' | head -1
+}
 if [ "$TUNNEL" = 1 ]; then
   if running -x cloudflared && [ -s /run/desktop/cloudflared.log ]; then
-    BASE="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /run/desktop/cloudflared.log | head -1)"
+    BASE="$(tunnel_url)"
   fi
   if [ -z "$BASE" ]; then
-    pkill -x cloudflared 2>/dev/null; : > /run/desktop/cloudflared.log
-    launch cloudflared tunnel --no-autoupdate --url http://localhost:6080 >/run/desktop/cloudflared.log 2>&1
-    for _ in $(seq 1 150); do
-      BASE="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /run/desktop/cloudflared.log | head -1)"
+    # Image startup (AB#709) runs before the hotel opens the room's egress: the hotel starts the
+    # container on a denied network and applies its policy right after. cloudflared exits on its
+    # first refused quick-tunnel request, so --foreground retries until DESKTOP_TUNNEL_WAIT seconds
+    # (default 45) have passed, then fails closed as before. The exec path keeps its one try.
+    TUNNEL_DEADLINE=$(( SECONDS + ${DESKTOP_TUNNEL_WAIT:-45} ))
+    while :; do
+      pkill -x cloudflared 2>/dev/null; : > /run/desktop/cloudflared.log
+      launch cloudflared tunnel --no-autoupdate --url http://localhost:6080 >/run/desktop/cloudflared.log 2>&1
+      CF_PID="$!"
+      for _ in $(seq 1 150); do
+        BASE="$(tunnel_url)"
+        [ -n "$BASE" ] && break
+        kill -0 "$CF_PID" 2>/dev/null || break
+        sleep 0.2
+      done
       [ -n "$BASE" ] && break
-      sleep 0.2
+      [ "$FG" = 1 ] && [ "$SECONDS" -lt "$TUNNEL_DEADLINE" ] || break
+      # Drop the failed try so the supervisor never watches a pid that already ended.
+      kill -TERM -- "-$CF_PID" 2>/dev/null || kill -TERM "$CF_PID" 2>/dev/null || true
+      wait "$CF_PID" 2>/dev/null
+      unset 'CHILDREN[${#CHILDREN[@]}-1]'; CHILDREN=("${CHILDREN[@]}")
+      sleep 1
     done
   fi
 fi
