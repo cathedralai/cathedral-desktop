@@ -1,17 +1,24 @@
 # cathedral-desktop
 
 A Linux desktop inside a Cathedral sealed sandbox, driven by a computer-use agent through the
-public API. Every click, keystroke and screenshot is one `ctcli sandbox exec`, so Cathedral signs a
-receipt for each step. Tracked as ADO AB#573 under AB#56 (mission M-D).
+public API. Tracked as ADO AB#573 under AB#56 (mission M-D).
+
+What is receipted, exactly: each exec the agent sends (`ctcli sandbox exec`; by default one per step,
+the input and the screenshot after it). The room's guest signs a receipt for it with the sha256 of the
+command and the sha256 of the room's answer, which holds the exit code and the output, so a step's
+screenshot is covered by that hash. The receipt records hashes, not the command or the picture. What
+a person does by hand in the viewer goes over VNC, not exec, and leaves no receipt. The screen stream
+to the viewer is not signed either.
 
 **Status: a spike and demo, not a Cathedral product.** On cathedral.computer the streamed desktop
 (computer-use) is still marked coming soon, and no sealed desktop evidence is published. The
 product path is AB#421 (preview URL with TLS in the guest) and AB#425 (streams through the edge).
 Until one of those ships with published evidence, describe this as a demo you run yourself.
 
-What it is: Xvfb + openbox + picom + tint2 in the Cathedral look (Inter, JetBrains Mono, one coral
+What it is: TigerVNC as the display + openbox + picom + tint2 in the Cathedral look (Inter, JetBrains Mono, one coral
 accent), Chromium, xfce4-terminal, xdotool and scrot inside a stock sealed room (AMD SEV-SNP host,
-gVisor room). x11vnc serves the display on localhost only; a branded noVNC page sits in front of it;
+gVisor room). Xtigervnc is the X display and the VNC server in one, on localhost only (x11vnc over Xvfb
+remains as `desktop-up --server x11vnc`); a branded noVNC page sits in front of it;
 an optional cloudflared quick tunnel makes that page reachable from a browser. The link carries the
 VNC password in the URL fragment, so one click opens the live desktop with no prompt and the password
 never reaches the tunnel or the server.
@@ -26,6 +33,7 @@ and cannot run inside a gVisor room. Hyprland headless under gVisor is untested 
 ./ctdesk new --size sealed-4x8 --hours 2 --tunnel   # create, bootstrap (about 60 s), start, print the one-click URL
 ./ctdesk shot ID                                    # screenshot to ./screen.png and open it
 ./ctdesk act ID -- mousemove 640 400 click 1        # one xdotool action
+./ctdesk step ID -- mousemove 640 400 click 1       # the action and the screenshot after it, in one exec
 ./ctdesk run ID -- bash -c 'export DISPLAY=:1; setsid browser https://cathedral.computer &'
 ./ctdesk url ID                                     # the one-click URL (password in the fragment) and the raw VNC password
 ./ctdesk down ID                                    # delete the room
@@ -39,6 +47,10 @@ uv venv .venv && uv pip install --python .venv/bin/python anthropic
   --max-turns 5 \
   --task "Open a terminal and run uname -a"
 ```
+
+Each step is one exec by default: the last input of a turn runs through the room's `step`, which
+returns the screenshot in the same exec (`--settle-ms`, default 300, is the wait before it).
+`--no-one-call-steps` sends the input and the screenshot as two execs, for an image without `step`.
 
 Screenshots and `receipts.json` land in `runs/<timestamp>/`. The log records exec request IDs, not
 signed receipt IDs; `complete: true` means the agent ended normally, not that the receipts passed
@@ -89,10 +101,12 @@ API and ctdesk create path overrides CMD with `sleep infinity` and keeps its exe
 Do not change the production image pin before the digest, eligible fleet and API startup mode agree.
 
 Run `python3 desktop/test_startup.py` for isolated readiness, child-exit and signal tests. They do not
-start a real desktop or test a live sealed sandbox. CI builds an unpublished image and runs
-`bash desktop/test-image.sh cathedral-desktop-ci` in disposable containers with networking disabled:
-local readiness, service failure, missing tunnel and the legacy exec path. The published digest and
-the gated service still need their live acceptance run.
+start a real desktop or test a live sealed sandbox. CI builds an unpublished image and, for each display
+server under runc and under gVisor, runs `bash desktop/test-image.sh IMAGE SERVER RUNTIME` (local
+readiness, service failure, missing tunnel, legacy exec; not for kasm) and
+`bash desktop/test-image-smoke.sh IMAGE SERVER RUNTIME` (input, screenshots, `step`, wallpaper, the RFB
+password check, switch refusal), all in disposable containers with networking disabled. The published
+digest and the gated service still need their live acceptance run.
 
 ## Rebuild and check the fingerprint
 
@@ -140,17 +154,41 @@ What this does and does not show (details in `tee/build/README.md`):
 | Path | Role |
 |---|---|
 | `desktop/bootstrap` | apt install of the desktop stack inside a stock room, idempotent, about 60 s |
-| `desktop/desktop-up` | starts Xvfb, openbox, picom, tint2, x11vnc, the branded page, optional tunnel; `--restart` reloads the look |
+| `desktop/shot`, `desktop/step` | `shot`: screenshot, PNG by default, `--jpeg [Q]`, `--scale PCT`, `--region X,Y,W,H` for smaller ones; `step ... -- <xdotool args>`: the input and the screenshot in one exec |
+| `desktop/desktop-up` | starts the display (TigerVNC by default; `--server x11vnc` or `--server kasm`), openbox, picom, tint2, the branded page, optional tunnel; `--restart` reloads the look; `--wallpaper neutral` (default, plain dark), `cathedral` (branded), `'#RRGGBB'` or `/work/your.png` |
 | `desktop/theme/` | openbox theme, tint2 panel, picom, terminal colours, GTK dark, wallpaper renderer, launcher entries |
 | `desktop/web/index.html` | the branded noVNC page: status chip, room id, password from the URL fragment |
-| `desktop/shot` | screenshot to `/work/screen.png`; `--b64` prints it for one-call capture |
 | `desktop/browser` | Chromium with the flags that work as root under gVisor |
 | `ctdesk` | the CLI above, customer path only (`ctcli sandbox exec/download`) |
-| `agent/cathedral_computer_use.py` | computer-use loop; one receipted exec per action |
+| `agent/cathedral_computer_use.py` | computer-use loop; by default one receipted exec per step (the room's `step`: input and screenshot), `--no-one-call-steps` for two |
 | `Dockerfile` | the prebuilt image: runs `desktop/bootstrap` at build, base image and cloudflared pinned |
 | `.github/workflows/publish-image.yml` | builds and pushes the image to GHCR, by hand only |
 | `evidence/` | screenshots from live rooms |
 | `tee/` | the SEV-SNP desktop TEE box: boxd, rootfs, clients, verifiers, fingerprint tools and rebuild recipes |
+
+## Display server and agent step
+
+`desktop-up --server` picks the display for the life of the room; switching on a running desktop is refused.
+
+| `--server` | Display | Viewer |
+|---|---|---|
+| `tigervnc` (default) | Xtigervnc is display :1 and the RFB server on 127.0.0.1:5901, nothing scrapes the screen | websockify and the branded page, link `https://<tunnel>/#p=<password>&room=<id>` |
+| `x11vnc` (fallback) | Xvfb, scraped by x11vnc on 127.0.0.1:5901 | the same page and link |
+| `kasm` (opt in, exec start only) | Xkasmvnc serves its own web client on 6080 | KasmVNC's client, basic auth as user `cathedral`, no `#p=` link, so the console cannot frame it |
+
+`/work/desktop.json` names the server (`"server": "tigervnc"`). The page asks for Tight with JPEG at
+quality 6 and compression 2. Everything is installed at image build; starting the desktop fetches nothing.
+
+An agent drives the room in one exec per step:
+
+```sh
+ctcli sandbox exec ID --timeout 45 -- desktop-up --room ID --tunnel     # once: start the desktop
+ctcli sandbox exec ID --timeout 40 -- step --settle 300 -- mousemove 640 400 click 1   # input, then the screenshot, base64 PNG on stdout
+ctcli sandbox exec ID --timeout 40 -- step                              # no input: just the screenshot
+```
+
+`step` exits 3 and prints nothing when the input fails, so no screenshot stands for an action that did
+not happen. `--jpeg [Q]`, `--scale PCT` and `--region X,Y,W,H` make the screenshot smaller, as for `shot`.
 
 ## Sealed pool facts this relies on (6 Nov 2026)
 
