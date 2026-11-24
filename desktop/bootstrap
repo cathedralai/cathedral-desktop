@@ -6,14 +6,18 @@ export DEBIAN_FRONTEND=noninteractive
 HERE="$(cd "$(dirname "$0")" && pwd)"
 t0=$(date +%s)
 need=0
-for c in Xvfb chromium cloudflared picom xfce4-terminal x11vnc websockify; do command -v "$c" >/dev/null || need=1; done
+for c in Xvfb Xtigervnc chromium cloudflared picom xfce4-terminal x11vnc websockify; do command -v "$c" >/dev/null || need=1; done
 if [ "$need" = 1 ]; then
   APT="apt-get -qq -o DPkg::Lock::Timeout=300"
+  # The image build pins the display server and the viewer to exact Debian versions (Dockerfile ARGs);
+  # a stock room bootstrap takes what the mirror has.
+  tiger=tigervnc-standalone-server; [ -n "${TIGERVNC_VERSION:-}" ] && tiger="tigervnc-standalone-server=${TIGERVNC_VERSION}"
+  novnc=novnc; [ -n "${NOVNC_VERSION:-}" ] && novnc="novnc=${NOVNC_VERSION}"
   $APT update
   $APT install -y --no-install-recommends \
     ca-certificates curl procps psmisc dbus-x11 \
     xvfb x11-xserver-utils x11-utils x11-apps xdotool scrot imagemagick \
-    x11vnc novnc python3-websockify \
+    x11vnc "$novnc" python3-websockify "$tiger" \
     openbox tint2 feh picom xfce4-terminal \
     chromium fonts-dejavu fonts-noto-color-emoji fonts-inter fonts-jetbrains-mono \
     papirus-icon-theme adwaita-icon-theme gnome-themes-extra >/dev/null
@@ -31,8 +35,21 @@ if [ "$need" = 1 ]; then
   apt-get clean
   : > /tmp/cloudflared.deb
 fi
+# Optional, for `desktop-up --server kasm`: KasmVNC, only when the build names a version (the Dockerfile
+# pins KASMVNC_VERSION and KASMVNC_SHA256). A stock room bootstrap does not install it.
+if [ -n "${KASMVNC_VERSION:-}" ] && ! command -v Xkasmvnc >/dev/null; then
+  APT="apt-get -qq -o DPkg::Lock::Timeout=300"
+  [ -n "$(ls /var/lib/apt/lists 2>/dev/null)" ] || $APT update
+  curl -fsSL -o /tmp/kasmvnc.deb "https://github.com/kasmtech/KasmVNC/releases/download/v${KASMVNC_VERSION}/kasmvncserver_debian_trixie_${KASMVNC_VERSION}_amd64.deb"
+  if [ -n "${KASMVNC_SHA256:-}" ]; then
+    echo "${KASMVNC_SHA256}  /tmp/kasmvnc.deb" | sha256sum -c - >/dev/null
+  fi
+  $APT install -y --no-install-recommends /tmp/kasmvnc.deb >/dev/null
+  apt-get clean
+  : > /tmp/kasmvnc.deb
+fi
 mkdir -p /opt/desktop/web /work /usr/share/themes/Cathedral/openbox-3
-install -m 755 "$HERE/desktop-up" "$HERE/desktop-supervise" "$HERE/shot" "$HERE/browser" /usr/local/bin/
+install -m 755 "$HERE/desktop-up" "$HERE/desktop-supervise" "$HERE/shot" "$HERE/step" "$HERE/browser" /usr/local/bin/
 install -m 644 "$HERE/theme/openbox-themerc" /usr/share/themes/Cathedral/openbox-3/themerc
 install -m 644 "$HERE/theme/tint2rc" "$HERE/theme/picom.conf" "$HERE/theme/terminalrc" "$HERE/theme/gtk-settings.ini" /opt/desktop/
 install -m 755 "$HERE/theme/apply-openbox.py" "$HERE/theme/wallpaper.sh" /opt/desktop/
@@ -41,4 +58,4 @@ install -m 644 "$HERE/web/index.html" /opt/desktop/web/index.html
 ln -sfn /usr/share/novnc/core /opt/desktop/web/core
 ln -sfn /usr/share/novnc/vendor /opt/desktop/web/vendor
 fc-cache -f >/dev/null 2>&1 || true
-echo "bootstrap done in $(( $(date +%s) - t0 ))s: $(Xvfb -version 2>&1 | head -1 | tr -d '\n'); $(chromium --version 2>/dev/null | tr -d '\n'); $(picom --version 2>/dev/null | head -1); $(cloudflared --version 2>/dev/null | head -1)"
+echo "bootstrap done in $(( $(date +%s) - t0 ))s: $(Xvfb -version 2>&1 | head -1 | tr -d '\n'); $(dpkg-query -W -f '${Package} ${Version}' tigervnc-standalone-server 2>/dev/null); $(chromium --version 2>/dev/null | tr -d '\n'); $(picom --version 2>/dev/null | head -1); $(cloudflared --version 2>/dev/null | head -1)"

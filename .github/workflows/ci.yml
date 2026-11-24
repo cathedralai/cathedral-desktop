@@ -22,18 +22,6 @@ env:
   CRYPTOGRAPHY_VERSION: '50.0.2'
 
 jobs:
-  desktop-image:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Build an unpublished image
-        run: docker build --tag cathedral-desktop-ci .
-      - name: Real desktop readiness, failure and legacy exec
-        run: bash desktop/test-image.sh cathedral-desktop-ci
-
   boxd:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -157,3 +145,69 @@ jobs:
           BOXD: ${{ runner.temp }}/bin/boxd
           CHROME: google-chrome
         run: python tee/client/test_cdp_shim.py
+
+  # The computer-use loop's own tests. They fake the model client and the room, so they need no key,
+  # no network and no packages. They were not run by CI before.
+  agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Agent loop tests
+        working-directory: agent
+        run: python -m unittest -v tests.test_cathedral_computer_use
+
+  # Builds an unpublished desktop image and starts it with each display server (tigervnc is the default,
+  # x11vnc the fallback, kasm opt in), under Docker's runtime and under gVisor (what sealed rooms run
+  # under): the supervised image CMD (test-image.sh) and the exec path with input, screenshots, step,
+  # wallpaper and the RFB auth check (test-image-smoke.sh). Both run with networking off.
+  desktop-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        server: [x11vnc, tigervnc, kasm]
+        runtime: [runc, runsc]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The same pinned gVisor release the sealed rooms run (cathedral-sandbox Dockerfile.tee-box-runsc):
+      # one tarball, runsc plus the gvisor-bin/ sidecars it resolves next to itself.
+      - name: Install gVisor
+        if: matrix.runtime == 'runsc'
+        env:
+          GVISOR_RELEASE: '20261005.0'
+          GVISOR_TARBALL_SHA512: 79869ae9a589355a46d46fdac068d9a954e741741ffe77c64e38c56ea955498c1cb04e9bce44e1cce5155333e6b76bee72347c6661bb7c78fd2fe3aad198c8fe
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/gvisor.tar.bz2 "https://storage.googleapis.com/gvisor/releases/release/${GVISOR_RELEASE}/x86_64/gvisor.tar.bz2"
+          echo "${GVISOR_TARBALL_SHA512}  /tmp/gvisor.tar.bz2" | sha512sum -c -
+          mkdir /tmp/gvisor && tar -xjf /tmp/gvisor.tar.bz2 -C /tmp/gvisor
+          sudo cp -a /tmp/gvisor/runsc /tmp/gvisor/gvisor-bin /usr/local/bin/
+          sudo chmod 755 /usr/local/bin/runsc
+          sudo /usr/local/bin/runsc install
+          sudo systemctl restart docker
+          docker info --format '{{json .Runtimes}}'
+      - name: Build the desktop image
+        run: docker build -t cathedral-desktop:ci .
+      - name: Image size
+        run: |
+          docker image inspect cathedral-desktop:ci --format '{{.Size}}' | awk '{printf "image size %.0f MiB\n", $1/1048576}'
+      - name: Supervised image start, service exit, missing tunnel and legacy exec
+        if: matrix.server != 'kasm'
+        env:
+          SERVER: ${{ matrix.server }}
+          RUNTIME: ${{ matrix.runtime }}
+        run: bash desktop/test-image.sh cathedral-desktop:ci "$SERVER" "$RUNTIME"
+      - name: Smoke test
+        env:
+          SERVER: ${{ matrix.server }}
+          RUNTIME: ${{ matrix.runtime }}
+        run: bash desktop/test-image-smoke.sh cathedral-desktop:ci "$SERVER" "$RUNTIME"

@@ -7,6 +7,7 @@
 #   ctdesk url ID                                            print the public noVNC URL and the VNC password
 #   ctdesk shot ID [out.png]                                 screenshot to a file (default ./screen.png) and open it
 #   ctdesk act ID -- <xdotool args>                          one input action, e.g. act ID -- mousemove 100 200 click 1
+#   ctdesk step ID [out.png] -- <xdotool args>               the input and the screenshot after it, in one exec
 #   ctdesk run ID -- <command>                               run any command in the room
 #   ctdesk down ID                                           delete the room
 # Honours CTCLI_CONFIG for the ctcli login to use; --image reads the same login (and CTCLI_API_KEY/CTCLI_API_BASE).
@@ -197,7 +198,7 @@ case "$cmd" in
     t_ready=$(date +%s)
     echo "desktop ready in $(( t_ready - t0 ))s (create $(( t_created - t0 ))s${boot}, start $(( t_ready - t_start ))s)"
     [ -n "$tunnel" ] && "$0" url "$id"
-    echo "next: $0 shot $id   |   $0 act $id -- mousemove 640 400 click 1   |   $0 down $id"
+    echo "next: $0 shot $id   |   $0 step $id -- mousemove 640 400 click 1   |   $0 down $id"
     ;;
   up)   id="${1:?ID}"; shift; ctcli sandbox exec "$id" --timeout 45 -- desktop-up --room "$id" "$@" ;;
   url)  id="${1:?ID}"
@@ -208,8 +209,13 @@ case "$cmd" in
         echo "$out: $(file -b "$out" | cut -d, -f1-2)"; command -v open >/dev/null && open "$out" || true ;;
   act)  id="${1:?ID}"; shift; [ "${1:-}" = "--" ] && shift
         ctcli sandbox exec "$id" --timeout 40 -- env DISPLAY=:1 xdotool "$@" ;;
+  step) id="${1:?ID}"; shift; out=screen.png
+        if [ $# -gt 0 ] && [ "$1" != "--" ]; then out="$1"; shift; fi
+        [ "${1:-}" = "--" ] && shift
+        ctcli sandbox exec "$id" --timeout 40 -- step -- "$@" | tr -d '\n' | base64 -d > "$out"
+        echo "$out: $(file -b "$out" | cut -d, -f1-2)" ;;
   run)  id="${1:?ID}"; shift; [ "${1:-}" = "--" ] && shift
         ctcli sandbox exec "$id" --timeout 45 -- "$@" ;;
   down) id="${1:?ID}"; ctcli sandbox delete "$id" --yes ;;
-  *) sed -n '2,12p' "$0"; exit 1 ;;
+  *) sed -n '2,13p' "$0"; exit 1 ;;
 esac
