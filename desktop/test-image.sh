@@ -20,6 +20,17 @@ trap cleanup EXIT
 docker image inspect "$IMAGE" --format '{{json .Config.Cmd}}' | python3 -c \
   'import json,sys; assert json.load(sys.stdin)==["desktop-up","--tunnel","--foreground"]'
 
+# A stopped desktop must report failed. Under gVisor the container's files are gone once it stops
+# (docker cp finds nothing), so there the supervisor's own line in the log is the check.
+assert_failed() {
+  docker logs "$1" > "$TMP/log" 2>&1
+  grep -q '^desktop-start: ' "$TMP/log"
+  if [ "$RUNTIME" = runc ]; then
+    docker cp "$1:/run/desktop/state" "$TMP/state"
+    test "$(cat "$TMP/state")" = failed
+  fi
+}
+
 wait_ready() {
   local name="$1"
   for _ in {1..60}; do
@@ -38,8 +49,7 @@ wait_ready "$name"
 docker exec "$name" pgrep -x "$VNC_PROC" >/dev/null
 docker exec "$name" pkill -x "$VNC_PROC"
 test "$(timeout 15 docker wait "$name")" = 1
-docker cp "$name:/run/desktop/state" "$TMP/state"
-test "$(cat "$TMP/state")" = failed
+assert_failed "$name"
 echo 'Local startup and service-exit check passed'
 
 # The declared CMD must fail closed when no tunnel can be issued.
@@ -47,8 +57,7 @@ name="desktop-no-tunnel-$RANDOM"
 NAMES+=("$name")
 "${RUN[@]}" --name "$name" "$IMAGE" >/dev/null
 test "$(timeout 90 docker wait "$name")" = 1
-docker cp "$name:/run/desktop/state" "$TMP/state"
-test "$(cat "$TMP/state")" = failed
+assert_failed "$name"
 echo 'Offline tunnel refusal check passed'
 
 # The current service overrides CMD and still starts the desktop through exec.

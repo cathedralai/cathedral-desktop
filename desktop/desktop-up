@@ -167,7 +167,9 @@ if ! xdpyinfo >/dev/null 2>&1; then
       -AlwaysShared -CompareFB 1 -FrameRate 60 >/run/desktop/tigervnc.log 2>&1
   elif [ "$SERVER" = kasm ]; then
     # KasmVNC is the X server itself, so nothing scrapes the screen. It listens on localhost only and
-    # speaks plain HTTP: the tunnel (or the edge) is the TLS end, as with websockify.
+    # speaks plain HTTP: the tunnel (or the edge) is the TLS end, as with websockify. -publicIP: without it
+    # KasmVNC asks public STUN servers for the room's address at start, which a sealed start must not do
+    # (and with no network it never comes up).
     KASM_AUTH=(-DisableBasicAuth 1)
     if [ "$VNC_AUTH" != none ]; then
       printf '%s\n%s\n' "$PW" "$PW" | kasmvncpasswd -u cathedral -w -o /run/desktop/kasmpasswd >/dev/null 2>&1
@@ -176,7 +178,7 @@ if ! xdpyinfo >/dev/null 2>&1; then
     fi
     launch Xkasmvnc :1 -geometry "$RES" -depth 24 -nolisten tcp -ac -SecurityTypes None "${KASM_AUTH[@]}" \
       -interface 127.0.0.1 -websocketPort 6080 -httpd /usr/share/kasmvnc/www -sslOnly 0 -AlwaysShared \
-      -FrameRate 60 >/run/desktop/kasmvnc.log 2>&1
+      -FrameRate 60 -publicIP 127.0.0.1 >/run/desktop/kasmvnc.log 2>&1
   else
     launch Xvfb :1 -screen 0 "${RES}x24" -nolisten tcp -ac +extension RANDR >/run/desktop/xvfb.log 2>&1
   fi
