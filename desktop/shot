@@ -32,9 +32,11 @@ if [ "$scale" = 100 ]; then
     if [ "$fmt" = png ] && [ -z "$region" ]; then import -window root "$out"; else echo "shot: capture failed" >&2; exit 1; fi
   fi
 else
+  # -scale (box filter) rather than -resize (Lanczos): far cheaper, and a reduced agent view only
+  # needs to stay readable. The smoke job's shot timings show the difference.
   tmp="$(mktemp /tmp/shot-XXXXXX.png)"
   scrot "${args[@]}" "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; echo "shot: capture failed" >&2; exit 1; }
-  if [ "$fmt" = jpg ]; then magick "$tmp" -resize "${scale}%" -quality "$q" "$out"; else magick "$tmp" -resize "${scale}%" "$out"; fi
+  if [ "$fmt" = jpg ]; then magick "$tmp" -scale "${scale}%" -quality "$q" "$out"; else magick "$tmp" -scale "${scale}%" "$out"; fi
   rc=$?; rm -f "$tmp"; [ "$rc" = 0 ] || { echo "shot: resize failed" >&2; exit 1; }
 fi
 if [ "$b64" = 1 ]; then base64 -w0 "$out"; else ls -l "$out"; fi

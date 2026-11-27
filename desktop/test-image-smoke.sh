@@ -108,6 +108,11 @@ x shot --b64 2>/dev/null | tr -d '\n' | base64 -d > /tmp/smoke-shot2.png 2>/dev/
 [ "$(head -c 8 /tmp/smoke-shot2.png | od -An -tx1 | tr -d ' \n')" = 89504e470d0a1a0a ] && ok "plain shot --b64 is still a full PNG" || bad "plain shot --b64 changed"
 med() { x bash -c 'for i in $(seq 15); do s=$(date +%s%N); "$@" >/dev/null 2>&1; e=$(date +%s%N); echo $(( (e-s)/1000000 )); done | sort -n | sed -n 8p' _ "$@"; }
 echo "info median of 15, in the room, $SERVER under $RUNTIME: shot png $(med shot) ms ($png B); shot --jpeg $(med shot --jpeg) ms ($jpg B); shot --jpeg 60 --scale 50 $(med shot --jpeg 60 --scale 50) ms ($half B); one xdotool click $(med env DISPLAY=:1 xdotool mousemove 200 300 click 1) ms"
+# Where a scaled shot spends its time: the capture, or the resize filter. Old filter vs the one shot uses.
+x shot >/dev/null 2>&1
+echo "info median of 15, in the room, $SERVER under $RUNTIME: magick 50% of the full PNG to JPEG, -resize $(med magick /work/screen.png -resize 50% -quality 60 /tmp/r.jpg) ms, -scale $(med magick /work/screen.png -scale 50% -quality 60 /tmp/s.jpg) ms"
+# Where a click spends its time: starting xdotool and reading the keymap, or the input itself.
+echo "info median of 15, in the room, $SERVER under $RUNTIME: xdotool getmouselocation (start only) $(med env DISPLAY=:1 xdotool getmouselocation) ms; mousemove $(med env DISPLAY=:1 xdotool mousemove 200 300) ms; click 1 $(med env DISPLAY=:1 xdotool click 1) ms; click --delay 0 1 (what a fused agent step sends) $(med env DISPLAY=:1 xdotool click --delay 0 1) ms"
 # step: the input and the screenshot in one call.
 x step --settle 50 --jpeg 60 --scale 50 -- mousemove 321 222 2>/dev/null | tr -d '\n' | base64 -d > /tmp/smoke-step.jpg 2>/dev/null
 sm="$(head -c 2 /tmp/smoke-step.jpg | od -An -tx1 | tr -d ' \n')"; ss=$(stat -c %s /tmp/smoke-step.jpg 2>/dev/null || echo 0)

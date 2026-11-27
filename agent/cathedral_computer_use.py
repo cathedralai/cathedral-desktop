@@ -87,8 +87,20 @@ def do_action(room: Room, name: str, inp: dict, shot_out: list | None = None) ->
     With shot_out (a list) a FUSABLE action runs through room.step and its screenshot is appended there."""
     coord = inp.get("coordinate")
 
+    fused = shot_out is not None and name in FUSABLE
+
+    def clicks(button, n, gap, old):
+        # xdotool sleeps --delay (default 100 ms) after every click, the last one too. In a fused
+        # step that sleep is waste: `step --settle` already waits before the screenshot. The gap
+        # stays between presses, so a double click is still one double click. Unfused input keeps
+        # the old arguments (`old`): there the trailing sleep spaces it from the next input.
+        if not fused or n < 1:
+            return old
+        head = ["click", "--repeat", n - 1, "--delay", gap, button] if n > 1 else []
+        return head + ["click", "--delay", 0, button]
+
     def run(*args) -> None:
-        if shot_out is not None and name in FUSABLE:
+        if fused:
             shot_out.append(room.step(*args))
         else:
             room.xdo(*args)
@@ -101,7 +113,7 @@ def do_action(room: Room, name: str, inp: dict, shot_out: list | None = None) ->
     if name in BUTTONS:
         args = ["mousemove", coord[0], coord[1]] if coord else []
         rep = REPEATS.get(name, 1)
-        args += ["click"] + (["--repeat", rep, "--delay", 80] if rep > 1 else []) + [BUTTONS[name]]
+        args += clicks(BUTTONS[name], rep, 80, ["click"] + (["--repeat", rep, "--delay", 80] if rep > 1 else []) + [BUTTONS[name]])
         run(*with_mods(inp.get("text"), args))
         return "OK"
     if name == "left_click_drag":
@@ -119,7 +131,8 @@ def do_action(room: Room, name: str, inp: dict, shot_out: list | None = None) ->
         return "OK"
     if name == "scroll":
         n = int(inp.get("scroll_amount", 3))
-        args = (["mousemove", coord[0], coord[1]] if coord else []) + ["click", "--repeat", n, "--delay", 40, SCROLL_BUTTONS[inp["scroll_direction"]]]
+        args = (["mousemove", coord[0], coord[1]] if coord else []) + clicks(SCROLL_BUTTONS[inp["scroll_direction"]], n, 40,
+                                                                       ["click", "--repeat", n, "--delay", 40, SCROLL_BUTTONS[inp["scroll_direction"]]])
         run(*with_mods(inp.get("text"), args))
         return "OK"
     if name == "type":
