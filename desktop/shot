@@ -32,16 +32,16 @@ if [ "$scale" = 100 ]; then
     if [ "$fmt" = png ] && [ -z "$region" ]; then import -window root "$out"; else echo "shot: capture failed" >&2; exit 1; fi
   fi
 else
-  # Fast path: scrot scales in the same process (--thumb), so no PNG is written and decoded again.
-  # scrot names the copy <name>-thumb.<ext>. If it is missing, fall back to magick -scale.
+  # Fast path: scrot scales in the same process (--thumb) and writes it uncompressed (PPM), so no
+  # full-size PNG is encoded and decoded. magick then encodes only the small image, once, at the
+  # requested quality (scrot does not apply -q to the thumb). scrot names it <name>-thumb.<ext>.
   dir="$(mktemp -d /tmp/shot-XXXXXX)"
-  [ "$fmt" = jpg ] && args+=(-q "$q")
-  if scrot "${args[@]}" -t "$scale" "$dir/full.$fmt" >/dev/null 2>&1 && [ -s "$dir/full-thumb.$fmt" ]; then
-    mv -f "$dir/full-thumb.$fmt" "$out"; rc=$?
-  elif [ -s "$dir/full.$fmt" ] || scrot "${args[@]}" "$dir/full.$fmt" >/dev/null 2>&1; then
+  enc=(); [ "$fmt" = jpg ] && enc=(-quality "$q")
+  if scrot "${args[@]}" -t "$scale" "$dir/full.ppm" >/dev/null 2>&1 && [ -s "$dir/full-thumb.ppm" ]; then
+    magick "$dir/full-thumb.ppm" "${enc[@]}" "$out"; rc=$?
+  elif scrot "${args[@]}" "$dir/full.png" >/dev/null 2>&1; then
     # -scale (box filter) rather than -resize (Lanczos): cheaper, and a reduced view only needs to stay readable.
-    if [ "$fmt" = jpg ]; then magick "$dir/full.$fmt" -scale "${scale}%" -quality "$q" "$out"; else magick "$dir/full.$fmt" -scale "${scale}%" "$out"; fi
-    rc=$?
+    magick "$dir/full.png" -scale "${scale}%" "${enc[@]}" "$out"; rc=$?
   else
     rm -rf "$dir"; echo "shot: capture failed" >&2; exit 1
   fi

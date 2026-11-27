@@ -99,8 +99,12 @@ if [ "$jm" = ffd8 ] && [ "$jpg" -gt 1000 ] && [ "$jpg" -lt "$png" ]; then ok "sh
 x shot --jpeg 60 --scale 50 >/dev/null 2>&1
 dim="$(x magick identify -format '%wx%h' /work/screen.jpg 2>/dev/null)"; half=$(x stat -c %s /work/screen.jpg 2>/dev/null || echo 0)
 [ "$dim" = 640x400 ] && ok "shot --scale 50 gives 640x400 ($half bytes)" || bad "shot --scale 50 gave '$dim', want 640x400"
-# shot's fast path needs scrot --thumb and its <name>-thumb naming; say which path this image takes.
-if x bash -c 'd=$(mktemp -d); DISPLAY=:1 scrot -o -t 50 "$d/f.jpg" >/dev/null 2>&1 && test -s "$d/f-thumb.jpg"'; then echo "info shot --scale uses scrot --thumb"; else echo "info shot --scale falls back to magick (no scrot --thumb)"; fi
+# shot's fast path needs scrot --thumb, PPM output and the <name>-thumb naming; say which path this image takes.
+if x bash -c 'd=$(mktemp -d); DISPLAY=:1 scrot -o -t 50 "$d/f.ppm" >/dev/null 2>&1 && test -s "$d/f-thumb.ppm"'; then echo "info shot --scale uses scrot --thumb (PPM)"; else echo "info shot --scale falls back to magick on a full PNG"; fi
+# --jpeg Q must hold on the scaled path: a lower quality gives a smaller file.
+x shot --jpeg 30 --scale 50 >/dev/null 2>&1; lo=$(x stat -c %s /work/screen.jpg 2>/dev/null || echo 0)
+x shot --jpeg 90 --scale 50 >/dev/null 2>&1; hi=$(x stat -c %s /work/screen.jpg 2>/dev/null || echo 0)
+[ "$lo" -gt 0 ] && [ "$lo" -lt "$hi" ] && ok "shot --scale honours --jpeg quality ($lo B at 30, $hi B at 90)" || bad "shot --scale ignored --jpeg quality ($lo B at 30, $hi B at 90)"
 x shot --region 100,100,300,200 >/dev/null 2>&1
 dim="$(x magick identify -format '%wx%h' /work/screen.png 2>/dev/null)"
 [ "$dim" = 300x200 ] && ok "shot --region captures the rectangle" || bad "shot --region gave '$dim', want 300x200"
