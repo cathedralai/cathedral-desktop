@@ -53,6 +53,7 @@ class Room:
         self.id = sandbox_id
         self.receipts: list[dict] = []
         self.settle_ms = 300
+        self.shot_args: list[str] = []  # e.g. ["--jpeg", "70"]; empty means PNG
 
     def exec(self, argv: list, timeout: int = 40) -> str:
         cmd = ["ctcli", "sandbox", "exec", self.id, "--timeout", str(timeout), "--"] + [str(a) for a in argv]
@@ -69,13 +70,13 @@ class Room:
         return self.exec(["env", "DISPLAY=:1", "xdotool", *args])
 
     def screenshot(self) -> str:
-        """Base64 PNG of the whole display, in one receipted exec."""
-        return self.exec(["shot", "--b64"]).strip()
+        """Base64 screenshot of the whole display (PNG, or JPEG with --jpeg), in one receipted exec."""
+        return self.exec(["shot", "--b64", *self.shot_args]).strip()
 
     def step(self, *args) -> str:
         """One xdotool call, then the screen once it has settled: the input and the base64 PNG in one
         receipted exec (the room's `step`). A failed input exits non-zero and prints no screenshot."""
-        return self.exec(["step", "--settle", str(self.settle_ms), "--", *args]).strip()
+        return self.exec(["step", "--settle", str(self.settle_ms), *self.shot_args, "--", *args]).strip()
 
 
 def with_mods(mods: str | None, args: list) -> list:
@@ -152,8 +153,8 @@ def do_action(room: Room, name: str, inp: dict, shot_out: list | None = None) ->
     raise ValueError(f"unsupported computer action: {name}")
 
 
-def image_block(b64: str) -> dict:
-    return {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}}
+def image_block(b64: str, media_type: str = "image/png") -> dict:
+    return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}}
 
 
 def main() -> int:
@@ -170,19 +171,27 @@ def main() -> int:
                          "input and the screenshot as two execs, for a desktop image without `step`")
     ap.add_argument("--settle-ms", type=int, default=300,
                     help="with one-call steps: milliseconds to let the screen settle before the screenshot (0 to 10000)")
+    ap.add_argument("--jpeg", type=int, metavar="Q", default=None,
+                    help="send JPEG screenshots at quality Q (1 to 100) instead of PNG: about half the bytes and "
+                         "faster to capture; small text may lose detail, so PNG stays the default")
     args = ap.parse_args()
+    if args.jpeg is not None and not 1 <= args.jpeg <= 100:
+        ap.error("--jpeg must be 1 to 100")
 
     if not 0 <= args.settle_ms <= 10000:
         ap.error("--settle-ms must be 0 to 10000")
     room = Room(args.sandbox)
     room.settle_ms = args.settle_ms
+    if args.jpeg is not None:
+        room.shot_args = ["--jpeg", str(args.jpeg)]
+    media_type, ext = ("image/jpeg", "jpg") if args.jpeg is not None else ("image/png", "png")
     run_dir = Path(args.out) / dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir.mkdir(parents=True, exist_ok=True)
     shots = 0
 
     def keep(b64: str) -> str:
         nonlocal shots
-        (run_dir / f"step-{shots:03d}.png").write_bytes(base64.b64decode(b64))
+        (run_dir / f"step-{shots:03d}.{ext}").write_bytes(base64.b64decode(b64))
         shots += 1
         return b64
 
@@ -206,7 +215,7 @@ def main() -> int:
             time.sleep(3)
 
         tools = [{"type": "computer_toolset_20260801", "configs": {"zoom": {"enabled": False}}}]
-        messages = [{"role": "user", "content": [{"type": "text", "text": args.task}, image_block(snap())]}]
+        messages = [{"role": "user", "content": [{"type": "text", "text": args.task}, image_block(snap(), media_type)]}]
         for turn in range(1, args.max_turns + 1):
             resp = client.beta.messages.create(
                 model=args.model,
@@ -243,7 +252,7 @@ def main() -> int:
                     r = do_action(room, tu.name, inp, shot_out)
                     if shot_out:
                         fused = keep(shot_out[-1])
-                    content = [image_block(snap())] if r == "image" else [{"type": "text", "text": r}]
+                    content = [image_block(snap(), media_type)] if r == "image" else [{"type": "text", "text": r}]
                     results.append({**base, "content": content})
                     new_receipts = room.receipts[prior_receipts:]
                     request_ids = [entry["request_id"] for entry in new_receipts]
@@ -254,7 +263,7 @@ def main() -> int:
                     results.append({**base, "is_error": True, "content": [{"type": "text", "text": f"{type(e).__name__}: {e}"[:500]}]})
                     print(f"[turn {turn}] {tu.name} failed: {e}", file=sys.stderr)
             if tool_uses[-1].name != "screenshot" and not failed:
-                results[-1]["content"] = list(results[-1]["content"]) + [image_block(fused if fused is not None else snap())]
+                results[-1]["content"] = list(results[-1]["content"]) + [image_block(fused if fused is not None else snap(), media_type)]
             messages.append({"role": "user", "content": results})
 
     except BaseException as exc:

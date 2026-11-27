@@ -283,3 +283,53 @@ class ClickArgumentTests(unittest.TestCase):
 
     def test_zero_scroll_keeps_the_old_arguments(self):
         self.assertEqual(self.argv("scroll", True, scroll_direction="up", scroll_amount=0), ["click", "--repeat", 0, "--delay", 40, 4])
+
+
+class JpegOptionTests(unittest.TestCase):
+    """--jpeg Q: the room's shot and step get the flag, the model gets image/jpeg, the run keeps .jpg files."""
+
+    def setUp(self):
+        with patch.dict(sys.modules, {"anthropic": types.ModuleType("anthropic")}):
+            spec = importlib.util.spec_from_file_location("cathedral_computer_use_jpeg", SCRIPT)
+            self.agent = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(self.agent)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_room_passes_the_jpeg_flag_to_shot_and_step(self):
+        room, seen = self.agent.Room("r"), []
+        room.exec = lambda argv, **_: seen.append(argv) or "B64"
+        room.shot_args = ["--jpeg", "70"]
+        room.screenshot()
+        room.step("click", 1)
+        self.assertEqual(seen, [["shot", "--b64", "--jpeg", "70"], ["step", "--settle", "300", "--jpeg", "70", "--", "click", 1]])
+
+    def test_default_is_png_with_no_flag(self):
+        room, seen = self.agent.Room("r"), []
+        room.exec = lambda argv, **_: seen.append(argv) or "B64"
+        room.screenshot()
+        self.assertEqual(seen, [["shot", "--b64"]])
+
+    def run_with(self, extra):
+        sent = []
+        done = types.SimpleNamespace(stop_reason="end_turn", content=[])
+        client = types.SimpleNamespace(beta=types.SimpleNamespace(messages=types.SimpleNamespace(
+            create=lambda **kwargs: sent.append(kwargs) or done)))
+        argv = ["cathedral_computer_use.py", "--sandbox", "r", "--task", "t", "--max-turns", "1", "--out", self.tmp.name, *extra]
+        with patch.object(self.agent, "Room", FakeRoom), patch.object(self.agent.anthropic, "Anthropic", return_value=client, create=True), \
+                patch.object(sys, "argv", argv):
+            code = self.agent.main()
+        return code, sent
+
+    def test_model_gets_image_jpeg_and_the_run_keeps_jpg(self):
+        code, sent = self.run_with(["--jpeg", "70"])
+        self.assertEqual(code, 0)
+        block = sent[0]["messages"][0]["content"][1]
+        self.assertEqual(block["source"]["media_type"], "image/jpeg")
+        run_dir = next(Path(self.tmp.name).iterdir())
+        self.assertEqual(sorted(f.name for f in run_dir.glob("step-*")), ["step-000.jpg"])
+
+    def test_bad_quality_is_refused(self):
+        for q in ("0", "101"):
+            with self.assertRaises(SystemExit):
+                self.run_with(["--jpeg", q])
