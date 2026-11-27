@@ -32,11 +32,19 @@ if [ "$scale" = 100 ]; then
     if [ "$fmt" = png ] && [ -z "$region" ]; then import -window root "$out"; else echo "shot: capture failed" >&2; exit 1; fi
   fi
 else
-  # -scale (box filter) rather than -resize (Lanczos): far cheaper, and a reduced agent view only
-  # needs to stay readable. The smoke job's shot timings show the difference.
-  tmp="$(mktemp /tmp/shot-XXXXXX.png)"
-  scrot "${args[@]}" "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; echo "shot: capture failed" >&2; exit 1; }
-  if [ "$fmt" = jpg ]; then magick "$tmp" -scale "${scale}%" -quality "$q" "$out"; else magick "$tmp" -scale "${scale}%" "$out"; fi
-  rc=$?; rm -f "$tmp"; [ "$rc" = 0 ] || { echo "shot: resize failed" >&2; exit 1; }
+  # Fast path: scrot scales in the same process (--thumb) and writes it uncompressed (PPM), so no
+  # full-size PNG is encoded and decoded. magick then encodes only the small image, once, at the
+  # requested quality (scrot does not apply -q to the thumb). scrot names it <name>-thumb.<ext>.
+  dir="$(mktemp -d /tmp/shot-XXXXXX)"
+  enc=(); [ "$fmt" = jpg ] && enc=(-quality "$q")
+  if scrot "${args[@]}" -t "$scale" "$dir/full.ppm" >/dev/null 2>&1 && [ -s "$dir/full-thumb.ppm" ]; then
+    magick "$dir/full-thumb.ppm" "${enc[@]}" "$out"; rc=$?
+  elif scrot "${args[@]}" "$dir/full.png" >/dev/null 2>&1; then
+    # -scale (box filter) rather than -resize (Lanczos): cheaper, and a reduced view only needs to stay readable.
+    magick "$dir/full.png" -scale "${scale}%" "${enc[@]}" "$out"; rc=$?
+  else
+    rm -rf "$dir"; echo "shot: capture failed" >&2; exit 1
+  fi
+  rm -rf "$dir"; [ "$rc" = 0 ] || { echo "shot: resize failed" >&2; exit 1; }
 fi
 if [ "$b64" = 1 ]; then base64 -w0 "$out"; else ls -l "$out"; fi
