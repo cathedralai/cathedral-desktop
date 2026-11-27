@@ -119,6 +119,8 @@ x shot >/dev/null 2>&1
 echo "info median of 15, in the room, $SERVER under $RUNTIME: magick 50% of the full PNG to JPEG, -resize $(med magick /work/screen.png -resize 50% -quality 60 /tmp/r.jpg) ms, -scale $(med magick /work/screen.png -scale 50% -quality 60 /tmp/s.jpg) ms"
 # Where a click spends its time: starting xdotool and reading the keymap, or the input itself.
 echo "info median of 15, in the room, $SERVER under $RUNTIME: xdotool getmouselocation (start only) $(med env DISPLAY=:1 xdotool getmouselocation) ms; mousemove $(med env DISPLAY=:1 xdotool mousemove 200 300) ms; click 1 $(med env DISPLAY=:1 xdotool click 1) ms; click --delay 0 1 (what a fused agent step sends) $(med env DISPLAY=:1 xdotool click --delay 0 1) ms"
+# Does the X shared-memory path exist here? Without it every capture copies the frame over the X socket.
+echo "info $SERVER under $RUNTIME: MIT-SHM listed $(x env DISPLAY=:1 xdpyinfo -queryExtensions 2>/dev/null | grep -c 'MIT-SHM'); $(x env DISPLAY=:1 xdpyinfo -ext MIT-SHM 2>/dev/null | grep -i 'shared' | head -2 | tr '\n' ' '); SysV shm segment $(x sh -c 'id=$(ipcmk -M 4096 2>/dev/null | grep -o "[0-9]*$") && ipcrm -m "$id" 2>/dev/null && echo works || echo fails')"
 # step: the input and the screenshot in one call.
 x step --settle 50 --jpeg 60 --scale 50 -- mousemove 321 222 2>/dev/null | tr -d '\n' | base64 -d > /tmp/smoke-step.jpg 2>/dev/null
 sm="$(head -c 2 /tmp/smoke-step.jpg | od -An -tx1 | tr -d ' \n')"; ss=$(stat -c %s /tmp/smoke-step.jpg 2>/dev/null || echo 0)
