@@ -137,7 +137,7 @@ class AgentLoopStatusTests(unittest.TestCase):
         code, log = self.run_loop([turn, done], max_turns=2, extra=("--settle-ms", "120"))
         self.assertEqual(code, 0)
         self.assertEqual([e["request_id"] for e in log["execs"]], ["shot-0", "step-1"])
-        self.assertEqual(log["execs"][1]["argv"], ["mousemove", 12, 34, "click", 1])
+        self.assertEqual(log["execs"][1]["argv"], ["mousemove", 12, 34, "click", "--delay", 0, 1])
         self.assertEqual(log["execs"][1]["settle_ms"], 120)
         # The fused screenshot is kept on disk like any other: the first look plus the step.
         self.assertEqual(self.shots_written(), ["step-000.png", "step-001.png"])
@@ -252,3 +252,34 @@ class ExecRequestLogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClickArgumentTests(unittest.TestCase):
+    """A fused step drops xdotool's sleep after the last click; unfused input keeps the old arguments."""
+
+    def setUp(self):
+        with patch.dict(sys.modules, {"anthropic": types.ModuleType("anthropic")}):
+            spec = importlib.util.spec_from_file_location("cathedral_computer_use_clicks", SCRIPT)
+            self.agent = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(self.agent)
+
+    def argv(self, name, fused, **inp):
+        room = FakeRoom("r")
+        self.agent.do_action(room, name, inp, [] if fused else None)
+        return room.receipts[-1]["argv"]
+
+    def test_fused_clicks_keep_the_gap_between_presses_and_drop_the_last_sleep(self):
+        self.assertEqual(self.argv("left_click", True, coordinate=[1, 2]), ["mousemove", 1, 2, "click", "--delay", 0, 1])
+        self.assertEqual(self.argv("double_click", True, coordinate=[1, 2]),
+                         ["mousemove", 1, 2, "click", "--repeat", 1, "--delay", 80, 1, "click", "--delay", 0, 1])
+        self.assertEqual(self.argv("triple_click", True)[-10:], ["click", "--repeat", 2, "--delay", 80, 1, "click", "--delay", 0, 1])
+        self.assertEqual(self.argv("scroll", True, coordinate=[1, 2], scroll_direction="down", scroll_amount=3),
+                         ["mousemove", 1, 2, "click", "--repeat", 2, "--delay", 40, 5, "click", "--delay", 0, 5])
+
+    def test_unfused_input_is_unchanged(self):
+        self.assertEqual(self.argv("left_click", False, coordinate=[1, 2]), ["mousemove", 1, 2, "click", 1])
+        self.assertEqual(self.argv("double_click", False), ["click", "--repeat", 2, "--delay", 80, 1])
+        self.assertEqual(self.argv("scroll", False, scroll_direction="up", scroll_amount=1), ["click", "--repeat", 1, "--delay", 40, 4])
+
+    def test_zero_scroll_keeps_the_old_arguments(self):
+        self.assertEqual(self.argv("scroll", True, scroll_direction="up", scroll_amount=0), ["click", "--repeat", 0, "--delay", 40, 4])
